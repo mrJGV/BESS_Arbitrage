@@ -1,0 +1,86 @@
+[project]
+name = "bess-arb"
+version = "0.1.0"
+description = "Day-ahead arbitrage demonstrator for a 10 MW / 20 MWh battery in the Spanish market (OMIE)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+dependencies = [
+    "pyomo>=6.9",
+    "highspy>=1.11",
+    "pandas>=2.2",
+    "pyarrow>=17",
+    "numpy>=2.0",
+    "matplotlib>=3.9",
+    "pyyaml>=6.0",
+    "lightgbm>=4.5",
+    "requests>=2.32",
+]
+
+[project.scripts]
+bess-arb = "bess_arb.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bess_arb"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.7",
+    "mypy>=1.13",
+    "import-linter>=2.1",
+    "types-pyyaml",
+    "types-requests",
+]
+
+# --------------------------------------------------------------------------
+# Lint / format
+# --------------------------------------------------------------------------
+[tool.ruff]
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "NPY", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert on hand-computed constants; magic numbers are the point.
+"tests/*" = ["E501"]
+
+# --------------------------------------------------------------------------
+# Types
+# --------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+files = ["src", "tests"]
+strict = true
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+# Solver and ML libraries ship no usable stubs.
+module = ["pyomo.*", "highspy.*", "lightgbm.*", "pyoptinterface.*"]
+ignore_missing_imports = true
+
+# --------------------------------------------------------------------------
+# Tests
+# --------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+# --------------------------------------------------------------------------
+# Import boundary (register section 7.2, CLAUDE.md invariant on the
+# modelling layer). Two contracts, because there are two distinct rules:
+# solvers stay inside model/, and the spec/Protocol are solver-free even
+# within model/. Enforced here and again in tests/test_import_boundary.py
+# so the rule survives a careless refactor of either mechanism.
+#
+# Contracts are activated in slice 1, when the modules they name exist.
+# --------------------------------------------------------------------------
+[tool.importlinter]
+root_package = "bess_arb"
