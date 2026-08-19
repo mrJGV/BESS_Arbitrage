@@ -1,0 +1,43 @@
+# --- Private working notes ------------------------------------------------
+# Published rationale lives in docs/DECISIONS.md.
+MODEL_DECISIONS.md
+
+# --- Secrets --------------------------------------------------------------
+.env
+*.token
+esios_token*
+
+# --- Throwaway spikes -----------------------------------------------------
+scratch/
+
+# --- Python ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- Environments ---------------------------------------------------------
+.venv/
+venv/
+env/
+
+# --- Tool caches ----------------------------------------------------------
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# --- Generated output -----------------------------------------------------
+# Backtest artefacts are reproducible; the frozen data snapshot and the
+# committed reference results under results/ are deliberately NOT ignored.
+figures/
+outputs/
+*.log
+
+# --- OS / editor ----------------------------------------------------------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,10 @@
+# Normalise to LF in the repository, check out native on Windows.
+* text=auto eol=lf
+
+# Binary artefacts: never touch, never diff.
+*.parquet binary
+*.png      binary
+*.pdf      binary
+
+# The lockfile is generated; keep it out of diff review noise.
+uv.lock linguist-generated=true
