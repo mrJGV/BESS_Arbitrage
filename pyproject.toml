@@ -1,0 +1,118 @@
+[project]
+name = "bess-arb"
+version = "0.1.0"
+description = "Day-ahead arbitrage demonstrator for a 10 MW / 20 MWh battery in the Spanish market (OMIE)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+dependencies = [
+    "pyomo>=6.9",
+    "highspy>=1.11",
+    "pandas>=2.2",
+    "pyarrow>=17",
+    "numpy>=2.0",
+    "matplotlib>=3.9",
+    "pyyaml>=6.0",
+    "lightgbm>=4.5",
+    "requests>=2.32",
+]
+
+[project.scripts]
+bess-arb = "bess_arb.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bess_arb"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.7",
+    "mypy>=1.13",
+    "import-linter>=2.1",
+    "types-pyyaml",
+    "types-requests",
+]
+
+# --------------------------------------------------------------------------
+# Lint / format
+# --------------------------------------------------------------------------
+[tool.ruff]
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "NPY", "RUF"]
+# The arithmetic in the docstrings is written in the same notation as
+# docs/DECISIONS.md, where "20 MWh × (0.85 × 100 − 10)" is the point.
+allowed-confusables = ["−", "×", "·"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert on hand-computed constants; magic numbers are the point.
+"tests/*" = ["E501"]
+
+# --------------------------------------------------------------------------
+# Types
+# --------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+files = ["src", "tests"]
+strict = true
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+# Solver and ML libraries ship no usable stubs.
+module = ["pyomo.*", "highspy.*", "lightgbm.*", "pyoptinterface.*"]
+ignore_missing_imports = true
+
+# --------------------------------------------------------------------------
+# Tests
+# --------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+# --------------------------------------------------------------------------
+# Import boundary (docs/DECISIONS.md §6.2, CLAUDE.md invariant on the
+# modelling layer). Three contracts, because there are three distinct rules:
+# solvers stay inside model/, the spec and the Protocol are solver-free even
+# within model/, and the modelling layer does not reach up into the
+# application layer. Enforced here and again in tests/test_import_boundary.py
+# so the rule survives a careless refactor of either mechanism.
+#
+# The static scan in tests/test_import_boundary.py globs the package and so
+# covers modules added after this file was last edited; these contracts name
+# their sources explicitly and check indirect chains, which the glob cannot.
+# Neither mechanism subsumes the other, which is why both exist.
+# --------------------------------------------------------------------------
+[tool.importlinter]
+root_package = "bess_arb"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Solver libraries stay inside bess_arb.model"
+type = "forbidden"
+source_modules = ["bess_arb.cli", "bess_arb.config"]
+forbidden_modules = ["pyomo", "highspy", "pyoptinterface", "gurobipy"]
+
+[[tool.importlinter.contracts]]
+# as_packages = false: the rule is about these three modules themselves, not
+# about model/ as a whole — the backends underneath them exist to import a
+# solver.
+name = "The spec, the Protocol and the registry are solver-free"
+type = "forbidden"
+source_modules = ["bess_arb.model", "bess_arb.model.spec", "bess_arb.model.base"]
+forbidden_modules = ["pyomo", "highspy", "pyoptinterface", "gurobipy"]
+as_packages = false
+
+[[tool.importlinter.contracts]]
+# The modelling layer sits at the bottom: it is handed dataclasses, it does
+# not go and read the config or know about the CLI.
+name = "The modelling layer does not depend on the application layer"
+type = "forbidden"
+source_modules = ["bess_arb.model"]
+forbidden_modules = ["bess_arb.cli", "bess_arb.config"]

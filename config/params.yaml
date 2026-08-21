@@ -1,0 +1,37 @@
+# Values and their justification: docs/DECISIONS.md §3 (asset, degradation,
+# tariffs) and §6 (stack). Sections for the horizon protocol, the data
+# snapshot and the forecaster arrive with the slices that read them
+
+# --- Asset -----------------------------------------------------------------
+# 10 MW / 20 MWh, 2-hour duration, grid-connected, standalone.
+battery:
+  p_max_mw: 10.0            # AC at the connection point, symmetric
+  e_max_mwh: 20.0           # usable energy, not nameplate
+  eta_rt: 0.85              # AC-to-AC round trip; split symmetrically as sqrt
+  c_deg_eur_mwh: 17.0       # charged on discharged throughput only
+  charge_tariff_eur_mwh: 0.0  # CNMC Circular 3/2020, see DECISIONS.md §3.4
+
+# --- Sensitivity -----------------------------------------------------------
+# c_deg is not an accounting parameter: a linear throughput cost is
+# algebraically a minimum-spread threshold, so this is what sets cycles per
+# year. Published values span nearly an order of magnitude, hence a
+# three-point sweep rather than one defended number.
+sensitivity:
+  c_deg_eur_mwh: [5.0, 17.0, 40.0]
+
+# --- Modelling stack -------------------------------------------------------
+backend: pyomo              # pyomo | poi (the port, when it exists)
+
+solver:
+  name: highs
+  # Window solves are small, so an exact gap is affordable and keeps the
+  # golden test's 1e-6 tolerance meaningful — HiGHS's 1e-4 default would be
+  # €0.15 of slop on a €1,500 optimum. The annual bound solve gets its own,
+  # looser tolerance, stated explicitly where it is run.
+  mip_gap: 0.0
+  time_limit_s: 300.0
+  threads: 1                # one thread: reproducible, and these are small
+  options: {}               # passed straight through to the solver
+
+# --- Reproducibility -------------------------------------------------------
+seed: 20260819
