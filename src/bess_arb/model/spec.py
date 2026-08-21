@@ -1,0 +1,177 @@
+"""Solver-free description of the battery, the solver settings and a result.
+
+This module imports nothing solver-related, and neither does
+:mod:`bess_arb.model.base`. Together they are the whole of the modelling
+layer that the rest of the package — and every backend — is allowed to see.
+A raw solver status or a Pyomo/PyOptInterface object must never appear here.
+See ``docs/DECISIONS.md`` §6.2.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any
+
+import numpy as np
+from numpy.typing import NDArray
+
+FloatArray = NDArray[np.float64]
+
+__all__ = [
+    "BatteryParams",
+    "FloatArray",
+    "Solution",
+    "SolveStatus",
+    "SolverConfig",
+]
+
+
+class SolveStatus(Enum):
+    """Project-owned normalisation of solver termination.
+
+    Every backend maps its solver's status codes onto this enum. A raw
+    solver enum escaping ``model/`` would reintroduce the coupling the
+    backend abstraction exists to prevent, through a side door.
+    """
+
+    OPTIMAL = "optimal"
+    """Convergence criteria satisfied — optimal within the configured gap."""
+
+    FEASIBLE = "feasible"
+    """A solution exists but the gap was not closed (time or node limit)."""
+
+    INFEASIBLE = "infeasible"
+    UNBOUNDED = "unbounded"
+    ERROR = "error"
+
+    @property
+    def has_solution(self) -> bool:
+        return self in (SolveStatus.OPTIMAL, SolveStatus.FEASIBLE)
+
+
+@dataclass(frozen=True, slots=True)
+class BatteryParams:
+    """Physical and economic parameters of the asset.
+
+    Round-trip efficiency is stored, not the one-way efficiencies: they are
+    derived as ``sqrt(eta_rt)`` so the symmetric split cannot drift out of
+    step with the round-trip figure it is supposed to decompose.
+    """
+
+    p_max_mw: float
+    e_max_mwh: float
+    eta_rt: float
+    c_deg_eur_mwh: float
+    charge_tariff_eur_mwh: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not self.p_max_mw > 0.0:
+            raise ValueError(f"p_max_mw must be positive, got {self.p_max_mw}")
+        if not self.e_max_mwh > 0.0:
+            raise ValueError(f"e_max_mwh must be positive, got {self.e_max_mwh}")
+        if not 0.0 < self.eta_rt <= 1.0:
+            raise ValueError(f"eta_rt must lie in (0, 1], got {self.eta_rt}")
+        if self.c_deg_eur_mwh < 0.0:
+            raise ValueError(
+                f"c_deg_eur_mwh must be non-negative, got {self.c_deg_eur_mwh}"
+            )
+        if self.charge_tariff_eur_mwh < 0.0:
+            raise ValueError(
+                "charge_tariff_eur_mwh must be non-negative, got "
+                f"{self.charge_tariff_eur_mwh}"
+            )
+
+    @property
+    def eta_c(self) -> float:
+        """One-way charging efficiency, ``sqrt(eta_rt)``."""
+        return math.sqrt(self.eta_rt)
+
+    @property
+    def eta_d(self) -> float:
+        """One-way discharging efficiency, ``sqrt(eta_rt)``."""
+        return math.sqrt(self.eta_rt)
+
+    @property
+    def duration_h(self) -> float:
+        """Hours at rated power to traverse the usable energy window."""
+        return self.e_max_mwh / self.p_max_mw
+
+
+@dataclass(frozen=True, slots=True)
+class SolverConfig:
+    """How to solve, in terms no backend-specific type appears in.
+
+    ``name`` is passed through to whichever factory the backend uses. The
+    gap and limit are held here rather than in the backend so switching
+    solver never requires a code change (CLAUDE.md invariant 7).
+    """
+
+    name: str = "highs"
+    mip_gap: float | None = 0.0
+    time_limit_s: float | None = None
+    threads: int | None = 1
+    options: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("solver name must not be empty")
+        if self.mip_gap is not None and self.mip_gap < 0.0:
+            raise ValueError(f"mip_gap must be non-negative, got {self.mip_gap}")
+        if self.time_limit_s is not None and self.time_limit_s <= 0.0:
+            raise ValueError(f"time_limit_s must be positive, got {self.time_limit_s}")
+        if self.threads is not None and self.threads < 1:
+            raise ValueError(f"threads must be at least 1, got {self.threads}")
+
+
+@dataclass(frozen=True, slots=True)
+class Solution:
+    """One window's dispatch, as returned by any backend.
+
+    ``objective`` is the solver's own objective value, not a recomputation
+    from the dispatch vectors. The two agreeing is a test, not an
+    assumption — see ``tests/test_model_golden.py``.
+    """
+
+    status: SolveStatus
+    objective: float
+    p_c_mw: FloatArray
+    p_d_mw: FloatArray
+    soc_mwh: FloatArray
+    dt_h: float
+
+    def __post_init__(self) -> None:
+        n = self.p_c_mw.shape[0]
+        if self.p_d_mw.shape[0] != n or self.soc_mwh.shape[0] != n:
+            raise ValueError(
+                "p_c_mw, p_d_mw and soc_mwh must have equal length, got "
+                f"{n}, {self.p_d_mw.shape[0]}, {self.soc_mwh.shape[0]}"
+            )
+        if not self.dt_h > 0.0:
+            raise ValueError(f"dt_h must be positive, got {self.dt_h}")
+
+    @property
+    def n_periods(self) -> int:
+        return int(self.p_c_mw.shape[0])
+
+    @property
+    def charged_mwh(self) -> float:
+        """Energy drawn from the grid — metered at the connection point."""
+        return float(self.p_c_mw.sum() * self.dt_h)
+
+    @property
+    def discharged_mwh(self) -> float:
+        """Energy delivered to the grid — metered at the connection point."""
+        return float(self.p_d_mw.sum() * self.dt_h)
+
+    def equivalent_cycles(self, e_max_mwh: float) -> float:
+        """Discharged throughput expressed in full equivalent cycles.
+
+        The sanity diagnostic that has to accompany every economic result:
+        a 2-hour battery showing hundreds of cycles a year means ``c_deg``
+        is too low and no other number on the page is worth reading.
+        """
+        if not e_max_mwh > 0.0:
+            raise ValueError(f"e_max_mwh must be positive, got {e_max_mwh}")
+        return self.discharged_mwh / e_max_mwh

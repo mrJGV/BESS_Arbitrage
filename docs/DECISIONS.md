@@ -308,9 +308,26 @@ internally, callers pass numpy in and get a dataclass out.
 
 ```python
 class BatteryMILP(Protocol):
-    def __init__(self, params: BatteryParams, n_periods: int, dt: float) -> None: ...
-    def solve(self, prices: np.ndarray, soc_initial: float) -> Solution: ...
+    def __init__(
+        self,
+        params: BatteryParams,
+        n_periods: int,
+        dt_h: float,
+        *,
+        solver: SolverConfig | None = None,
+        relax_binaries: bool = False,
+    ) -> None: ...
+    def solve(self, prices: FloatArray, soc_initial: float) -> Solution: ...
 ```
+
+`SolverConfig` — name, gap, time limit, threads — is part of the solver-free
+spec rather than of any backend, so the solver is chosen in
+`config/params.yaml` and nowhere else.
+
+`relax_binaries` is a diagnostic and not a policy option. It exists so the
+demonstration in §3.2 can be run as a test from outside `model/`, without
+importing a solver to do it. No policy may use it: relaxing the MILP,
+including for the bound, is the one thing that is never done (§7).
 
 Two rules make "swappable" true rather than aspirational:
 
@@ -344,9 +361,19 @@ Verified before the backend was written (Pyomo 6.10.1, highspy 1.15.1):
   122 ms/solve rebuilding**, a 2.5× speedup. `"highs"` beats `"appsi_highs"`
   (62 ms/solve). Extrapolated: ~12 minutes for the full workload against ~31.
 
+Re-measured on the backend itself once it existed, over sixty 192-period windows with
+prices drawn from `N(60, 40)`: **64 ms/solve persistent against 125 ms rebuilding**,
+so 2.0× rather than 2.5×. The spike's price vectors were structured and easy; random
+ones produce near-ties that make the branch-and-bound work harder. The speedup is a
+property of the instance mix as much as of the interface, and the smaller figure is
+the one to plan with. Two settings were checked at the same time and kept: `threads:
+1` costs nothing measurable (these models are too small to parallelise) and buys
+determinism, and closing the gap exactly costs ~16% against HiGHS's 1e-4 default,
+which is worth paying to keep the golden test's 1e-6 tolerance meaningful.
+
 **The honest finding:** the persistent pattern does *not* make model construction
-disappear, as expected — it buys 2.5×, not an order of magnitude, because Pyomo still
-walks the model to detect what changed. That leaves the PyOptInterface port a real
+disappear, as expected — it buys 2–2.5×, not an order of magnitude, because Pyomo
+still walks the model to detect what changed. That leaves the PyOptInterface port a real
 motivation and, more usefully, a measured baseline to beat rather than a vendor
 benchmark to trust.
 

@@ -47,6 +47,9 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "NPY", "RUF"]
+# The arithmetic in the docstrings is written in the same notation as
+# docs/DECISIONS.md, where "20 MWh × (0.85 × 100 − 10)" is the point.
+allowed-confusables = ["−", "×", "·"]
 
 [tool.ruff.lint.per-file-ignores]
 # Tests assert on hand-computed constants; magic numbers are the point.
