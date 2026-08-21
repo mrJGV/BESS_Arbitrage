@@ -2,15 +2,16 @@
 # identically on Windows, macOS and Linux; this file exists for Unix habit
 # and for anyone who types `make` before reading the README.
 
-.PHONY: help install lint fmt types test check clean
+.PHONY: help install lint fmt types imports test check clean
 
 help:
 	@echo "install  create the environment from uv.lock"
 	@echo "lint     ruff check"
 	@echo "fmt      ruff format (writes)"
 	@echo "types    mypy"
+	@echo "imports  import-linter: no solver outside model/"
 	@echo "test     pytest"
-	@echo "check    lint + types + test, as CI runs it"
+	@echo "check    lint + types + imports + test, as CI runs it"
 
 install:
 	uv sync --all-groups --locked
@@ -25,10 +26,13 @@ fmt:
 types:
 	uv run mypy
 
+imports:
+	uv run lint-imports
+
 test:
 	uv run pytest -q
 
-check: lint types test
+check: lint types imports test
 
 clean:
 	rm -rf .pytest_cache .ruff_cache .mypy_cache

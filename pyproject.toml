@@ -77,13 +77,42 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 
 # --------------------------------------------------------------------------
-# Import boundary (register section 7.2, CLAUDE.md invariant on the
-# modelling layer). Two contracts, because there are two distinct rules:
-# solvers stay inside model/, and the spec/Protocol are solver-free even
-# within model/. Enforced here and again in tests/test_import_boundary.py
+# Import boundary (docs/DECISIONS.md §6.2, CLAUDE.md invariant on the
+# modelling layer). Three contracts, because there are three distinct rules:
+# solvers stay inside model/, the spec and the Protocol are solver-free even
+# within model/, and the modelling layer does not reach up into the
+# application layer. Enforced here and again in tests/test_import_boundary.py
 # so the rule survives a careless refactor of either mechanism.
 #
-# Contracts are activated in slice 1, when the modules they name exist.
+# The static scan in tests/test_import_boundary.py globs the package and so
+# covers modules added after this file was last edited; these contracts name
+# their sources explicitly and check indirect chains, which the glob cannot.
+# Neither mechanism subsumes the other, which is why both exist.
 # --------------------------------------------------------------------------
 [tool.importlinter]
 root_package = "bess_arb"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Solver libraries stay inside bess_arb.model"
+type = "forbidden"
+source_modules = ["bess_arb.cli", "bess_arb.config"]
+forbidden_modules = ["pyomo", "highspy", "pyoptinterface", "gurobipy"]
+
+[[tool.importlinter.contracts]]
+# as_packages = false: the rule is about these three modules themselves, not
+# about model/ as a whole — the backends underneath them exist to import a
+# solver.
+name = "The spec, the Protocol and the registry are solver-free"
+type = "forbidden"
+source_modules = ["bess_arb.model", "bess_arb.model.spec", "bess_arb.model.base"]
+forbidden_modules = ["pyomo", "highspy", "pyoptinterface", "gurobipy"]
+as_packages = false
+
+[[tool.importlinter.contracts]]
+# The modelling layer sits at the bottom: it is handed dataclasses, it does
+# not go and read the config or know about the CLI.
+name = "The modelling layer does not depend on the application layer"
+type = "forbidden"
+source_modules = ["bess_arb.model"]
+forbidden_modules = ["bess_arb.cli", "bess_arb.config"]

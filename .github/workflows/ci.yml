@@ -35,5 +35,9 @@ jobs:
       - name: Types
         run: uv run mypy
 
+      # The architectural invariant: no solver library outside model/.
+      - name: Import boundary
+        run: uv run lint-imports
+
       - name: Tests
         run: uv run pytest -q
