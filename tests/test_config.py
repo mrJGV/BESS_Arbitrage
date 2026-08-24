@@ -8,6 +8,7 @@ degradation sweep breaks a test that names the section of
 
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,26 @@ battery:
   charge_tariff_eur_mwh: 0.0
 sensitivity:
   c_deg_eur_mwh: [5.0, 17.0, 40.0]
+data:
+  directory: data
+  snapshot_date: 2026-08-24
+  regimes:
+    hourly:
+      dt_h: 1.0
+      first_day: 2022-01-01
+      last_day: 2025-09-30
+    quarter_hourly:
+      dt_h: 0.25
+      first_day: 2025-10-01
+      last_day: 2026-08-23
+  series:
+    price_eur_mwh:
+      indicator: 600
+      geo_id: 3
+  crosscheck:
+    first_day: 2024-06-01
+    last_day: 2024-06-30
+    tolerance_eur_mwh: 0.01
 backend: pyomo
 solver:
   name: highs
@@ -74,6 +95,72 @@ def test_the_backend_and_solver_come_from_the_file() -> None:
     # An exact gap: HiGHS's 1e-4 default would be €0.15 of slop on the
     # golden case's €1,500, which the 1e-6 assertion would not survive.
     assert config.solver.mip_gap == 0.0
+
+
+def test_the_verified_indicator_ids_are_pinned() -> None:
+    """Verified against the live ESIOS catalogue on 24 August 2026.
+
+    Pinned here so an ID can be changed but not *silently* changed. The
+    snapshot is frozen under invariant 6, so a quietly edited indicator
+    number would put the config and the committed Parquet out of step with
+    no error anywhere.
+    """
+    series = {spec.name: spec for spec in load_config().data.series}
+
+    assert series["price_eur_mwh"].indicator_id == 600
+    assert series["wind_forecast_mw"].indicator_id == 1777
+    assert series["solar_forecast_mw"].indicator_id == 1779
+    assert series["demand_forecast_mw"].indicator_id == 1775
+
+
+def test_the_price_series_names_its_geography() -> None:
+    """Indicator 600 carries six geographies; España is 3.
+
+    Without this key the loader keeps whichever the server sent first, which
+    is Portugal. The two agree on most days, so the error would not announce
+    itself — 36 of 744 periods differed in January 2024, by up to €39/MWh.
+    """
+    series = {spec.name: spec for spec in load_config().data.series}
+
+    assert series["price_eur_mwh"].geo_id == 3
+
+
+def test_the_regimes_are_the_two_the_market_has() -> None:
+    """docs/DECISIONS.md §1.1: hourly to 30 September 2025, then 15-minute MTUs."""
+    data = load_config().data
+
+    hourly = data.regime("hourly")
+    quarter = data.regime("quarter_hourly")
+
+    assert hourly.regime.dt_h == 1.0
+    assert quarter.regime.dt_h == 0.25
+    # The regimes must abut exactly: a gap loses days, an overlap
+    # double-counts them.
+    assert quarter.first_day == hourly.last_day + dt.timedelta(days=1)
+    assert hourly.first_day == dt.date(2022, 1, 1)
+
+
+def test_the_snapshot_filename_carries_the_freeze_date() -> None:
+    data = load_config().data
+
+    assert data.parquet_path("hourly").name == "hourly_2026-08-24.parquet"
+
+
+def test_a_delivery_day_with_a_time_on_it_is_rejected(tmp_path: Path) -> None:
+    """A day plus a time is ambiguous about which zone decides."""
+    text = MINIMAL_CONFIG.replace(
+        "first_day: 2022-01-01", "first_day: 2022-01-01 00:00:00"
+    )
+
+    with pytest.raises(ConfigError, match="carries a time"):
+        load_config(_write(tmp_path, text))
+
+
+def test_a_series_without_an_indicator_is_an_error(tmp_path: Path) -> None:
+    text = MINIMAL_CONFIG.replace("      indicator: 600\n", "")
+
+    with pytest.raises(ConfigError, match="indicator"):
+        load_config(_write(tmp_path, text))
 
 
 def _write(tmp_path: Path, text: str) -> Path:

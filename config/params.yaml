@@ -19,6 +19,66 @@ battery:
 sensitivity:
   c_deg_eur_mwh: [5.0, 17.0, 40.0]
 
+# --- Data ------------------------------------------------------------------
+# The frozen snapshot. Downloaded once; after the snapshot commit the
+# download code is not modified (invariant 6). Indicator IDs were verified
+# against the live ESIOS catalogue on 24 August 2026 — see data/README.md for
+# the evidence, including why the D+1 forecast family is the only one usable
+# under invariant 1.
+data:
+  directory: data
+  snapshot_date: 2026-08-24
+
+  # Two regimes because the market changed under us: SDAC moved to 15-minute
+  # market time units for delivery day 1 October 2025. Neither dt_h nor the
+  # boundary is hardcoded anywhere in the code.
+  regimes:
+    hourly:
+      dt_h: 1.0
+      first_day: 2022-01-01
+      last_day: 2025-09-30
+    quarter_hourly:
+      dt_h: 0.25
+      first_day: 2025-10-01
+      last_day: 2026-08-23
+
+  series:
+    # geo_id 3 is España. Indicator 600 carries six geographies and returns
+    # them interleaved on the same timestamps with Portugal first, so this
+    # key is load-bearing: without it the Portuguese price gets stored as the
+    # Spanish one. They agree on most days — 36 of 744 periods differed in
+    # January 2024, by up to €39/MWh — which is exactly what makes the
+    # mistake survive a casual look.
+    price_eur_mwh:
+      indicator: 600
+      geo_id: 3
+
+    # The "Previsión diaria D+1" family: one publication per day covering
+    # D+1, which is the information a bidder holds at 12:00 on D-1. The
+    # rolling alternatives (541 wind, 542 PV, 460 demand) are revised
+    # intraday and ESIOS serves the latest revision, so a historical pull of
+    # those returns post-gate information. Measured over March 2024 against
+    # realised generation: rolling 541 scores RMSE 896 MW against D+1 1777's
+    # 2043 MW. A day-ahead forecast cannot be 2.3x better than a day-ahead
+    # forecast; the difference is lookahead. geo_id 8741 is "Península".
+    demand_forecast_mw:
+      indicator: 1775
+      geo_id: 8741
+    wind_forecast_mw:
+      indicator: 1777
+      geo_id: 8741
+    solar_forecast_mw:
+      indicator: 1779
+      geo_id: 8741
+
+  # Independent validation against the market operator's own files. One
+  # month is the register's minimum; June 2024 sits inside the hourly regime
+  # where marginalpdbc has its classic layout.
+  crosscheck:
+    first_day: 2024-06-01
+    last_day: 2024-06-30
+    tolerance_eur_mwh: 0.01
+
 # --- Modelling stack -------------------------------------------------------
 backend: pyomo              # pyomo | poi (the port, when it exists)
 

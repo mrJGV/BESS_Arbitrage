@@ -54,9 +54,22 @@ def _modules_outside_model() -> list[Path]:
 
 
 def test_the_scan_looks_at_the_modules_it_claims_to() -> None:
+    """The glob picks up new modules on its own; this pins that it really did.
+
+    Named explicitly rather than counted, so a module that stops being
+    scanned — moved, renamed, excluded by a stray path rule — fails here
+    instead of quietly narrowing the boundary it is supposed to guard.
+    """
     scanned = {path.name for path in _modules_outside_model()}
 
-    assert {"__init__.py", "cli.py", "config.py"} <= scanned
+    assert {
+        "__init__.py",
+        "cli.py",
+        "config.py",
+        "timeline.py",
+        "esios.py",
+        "omie.py",
+    } <= scanned
 
 
 def test_the_detector_catches_a_solver_import() -> None:
@@ -90,7 +103,8 @@ def test_importing_the_non_modelling_half_does_not_load_a_solver() -> None:
     """
     program = (
         "import sys;"
-        " import bess_arb, bess_arb.cli, bess_arb.config, bess_arb.model;"
+        " import bess_arb, bess_arb.cli, bess_arb.config, bess_arb.model,"
+        " bess_arb.timeline, bess_arb.data.esios, bess_arb.data.omie;"
         " loaded = sorted(m for m in sys.modules if m.split('.')[0] in"
         f" {sorted(SOLVER_ROOTS)});"
         " print(loaded)"

@@ -65,8 +65,19 @@ strict = true
 warn_unreachable = true
 
 [[tool.mypy.overrides]]
-# Solver and ML libraries ship no usable stubs.
-module = ["pyomo.*", "highspy.*", "lightgbm.*", "pyoptinterface.*"]
+# Solver and ML libraries ship no usable stubs. pandas ships none either —
+# `pandas-stubs` is a separate distribution that lags the 3.x line, and
+# pinning it would trade real type checking on our own signatures for a
+# stream of stub-version noise. Everything this project writes stays fully
+# annotated; what is unchecked is the pandas surface, not our use of it.
+module = [
+    "pyomo.*",
+    "highspy.*",
+    "lightgbm.*",
+    "pyoptinterface.*",
+    "pandas.*",
+    "pyarrow.*",
+]
 ignore_missing_imports = true
 
 # --------------------------------------------------------------------------
@@ -96,7 +107,12 @@ include_external_packages = true
 [[tool.importlinter.contracts]]
 name = "Solver libraries stay inside bess_arb.model"
 type = "forbidden"
-source_modules = ["bess_arb.cli", "bess_arb.config"]
+source_modules = [
+    "bess_arb.cli",
+    "bess_arb.config",
+    "bess_arb.timeline",
+    "bess_arb.data",
+]
 forbidden_modules = ["pyomo", "highspy", "pyoptinterface", "gurobipy"]
 
 [[tool.importlinter.contracts]]
@@ -110,9 +126,17 @@ forbidden_modules = ["pyomo", "highspy", "pyoptinterface", "gurobipy"]
 as_packages = false
 
 [[tool.importlinter.contracts]]
-# The modelling layer sits at the bottom: it is handed dataclasses, it does
-# not go and read the config or know about the CLI.
+# The modelling layer sits at the bottom: it is handed dataclasses and plain
+# numbers. It does not read the config, know about the CLI, or reach for the
+# calendar — a backend that imported `timeline` would be one step from
+# deriving its own period count, which is how "never 24 periods per day"
+# gets violated in the one place hardest to test.
 name = "The modelling layer does not depend on the application layer"
 type = "forbidden"
 source_modules = ["bess_arb.model"]
-forbidden_modules = ["bess_arb.cli", "bess_arb.config"]
+forbidden_modules = [
+    "bess_arb.cli",
+    "bess_arb.config",
+    "bess_arb.timeline",
+    "bess_arb.data",
+]
