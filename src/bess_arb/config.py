@@ -8,6 +8,7 @@ ignored ``c_deg_eur_mhw`` would produce a plausible wrong number.
 
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,11 +17,91 @@ from typing import Any
 import yaml
 
 from bess_arb.model.spec import BatteryParams, SolverConfig
+from bess_arb.timeline import Regime
 
-__all__ = ["DEFAULT_CONFIG_PATH", "Config", "ConfigError", "load_config"]
+__all__ = [
+    "DEFAULT_CONFIG_PATH",
+    "Config",
+    "ConfigError",
+    "DataConfig",
+    "RegimeWindow",
+    "SeriesSpec",
+    "load_config",
+]
 
 # src/bess_arb/config.py -> src/bess_arb -> src -> repository root.
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "params.yaml"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+DEFAULT_CONFIG_PATH = REPO_ROOT / "config" / "params.yaml"
+
+
+@dataclass(frozen=True, slots=True)
+class SeriesSpec:
+    """One ESIOS series and the geography to keep from it.
+
+    ``geo_id`` is not decoration. Indicator 600 returns six geographies
+    interleaved on the same timestamps, so a series without an explicit
+    geography is a series that silently stores whichever the server sent
+    first.
+    """
+
+    name: str
+    indicator_id: int
+    geo_id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RegimeWindow:
+    """A market regime and the days the snapshot covers for it."""
+
+    regime: Regime
+    first_day: dt.date
+    last_day: dt.date
+
+    def __post_init__(self) -> None:
+        if self.last_day < self.first_day:
+            raise ValueError(
+                f"regime {self.regime.name!r}: last_day {self.last_day} "
+                f"precedes first_day {self.first_day}"
+            )
+
+    @property
+    def name(self) -> str:
+        return self.regime.name
+
+
+@dataclass(frozen=True, slots=True)
+class DataConfig:
+    """The frozen snapshot: where it lives, what it covers, what is in it."""
+
+    directory: Path
+    snapshot_date: dt.date
+    regimes: tuple[RegimeWindow, ...]
+    series: tuple[SeriesSpec, ...]
+    crosscheck_first_day: dt.date
+    crosscheck_last_day: dt.date
+    crosscheck_tolerance_eur_mwh: float
+
+    def regime(self, name: str) -> RegimeWindow:
+        for window in self.regimes:
+            if window.name == name:
+                return window
+        known = ", ".join(window.name for window in self.regimes)
+        raise KeyError(f"unknown regime {name!r}; known regimes: {known}")
+
+    def parquet_path(self, regime_name: str) -> Path:
+        """Snapshot filename for a regime — the freeze date is in the name.
+
+        One file per regime, so which grid a file is on is answerable
+        without opening it.
+        """
+        return (
+            self.directory / f"{regime_name}_{self.snapshot_date.isoformat()}.parquet"
+        )
+
+    @property
+    def manifest_path(self) -> Path:
+        return self.directory / "manifest.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +110,7 @@ class Config:
 
     battery: BatteryParams
     c_deg_sensitivity: tuple[float, ...]
+    data: DataConfig
     backend: str
     solver: SolverConfig
     seed: int
@@ -49,6 +131,7 @@ class Config:
         return Config(
             battery=battery,
             c_deg_sensitivity=self.c_deg_sensitivity,
+            data=self.data,
             backend=self.backend,
             solver=self.solver,
             seed=self.seed,
@@ -89,7 +172,7 @@ def load_config(path: Path | None = None) -> Config:
         raise ConfigError(f"config file {path} does not contain a mapping")
 
     _reject_unknown(
-        raw, {"battery", "sensitivity", "backend", "solver", "seed"}, "<root>"
+        raw, {"battery", "sensitivity", "data", "backend", "solver", "seed"}, "<root>"
     )
 
     battery_section = _section(raw, "battery")
@@ -149,10 +232,102 @@ def load_config(path: Path | None = None) -> Config:
     return Config(
         battery=battery,
         c_deg_sensitivity=c_deg_sensitivity,
+        data=_load_data(_section(raw, "data"), path),
         backend=backend,
         solver=solver,
         seed=seed,
     )
+
+
+def _load_data(section: Mapping[str, Any], config_path: Path) -> DataConfig:
+    _reject_unknown(
+        section,
+        {"directory", "snapshot_date", "regimes", "series", "crosscheck"},
+        "data",
+    )
+
+    directory = Path(str(section.get("directory", "data")))
+    if not directory.is_absolute():
+        # Relative to the repository, not to the working directory: `make
+        # figures` from a subdirectory must find the same snapshot.
+        directory = (config_path.resolve().parent.parent / directory).resolve()
+
+    regimes_section = _section(section, "regimes")
+    regimes: list[RegimeWindow] = []
+    for name, spec in regimes_section.items():
+        if not isinstance(spec, Mapping):
+            raise ConfigError(f"data.regimes.{name} must be a mapping")
+        _reject_unknown(spec, {"dt_h", "first_day", "last_day"}, f"data.regimes.{name}")
+        try:
+            regimes.append(
+                RegimeWindow(
+                    regime=Regime(str(name), float(spec["dt_h"])),
+                    first_day=_as_date(spec["first_day"], f"data.regimes.{name}"),
+                    last_day=_as_date(spec["last_day"], f"data.regimes.{name}"),
+                )
+            )
+        except KeyError as error:
+            raise ConfigError(
+                f"data.regimes.{name} is missing {error.args[0]!r}"
+            ) from None
+    if not regimes:
+        raise ConfigError("data.regimes must declare at least one regime")
+
+    series_section = _section(section, "series")
+    series: list[SeriesSpec] = []
+    for name, spec in series_section.items():
+        if not isinstance(spec, Mapping):
+            raise ConfigError(f"data.series.{name} must be a mapping")
+        _reject_unknown(spec, {"indicator", "geo_id"}, f"data.series.{name}")
+        try:
+            indicator_id = int(spec["indicator"])
+        except KeyError:
+            raise ConfigError(f"data.series.{name} is missing 'indicator'") from None
+        series.append(
+            SeriesSpec(
+                name=str(name),
+                indicator_id=indicator_id,
+                geo_id=_optional_int(spec.get("geo_id")),
+            )
+        )
+    if not series:
+        raise ConfigError("data.series must declare at least one series")
+
+    crosscheck = _section(section, "crosscheck")
+    _reject_unknown(
+        crosscheck, {"first_day", "last_day", "tolerance_eur_mwh"}, "data.crosscheck"
+    )
+    return DataConfig(
+        directory=directory,
+        snapshot_date=_as_date(section["snapshot_date"], "data"),
+        regimes=tuple(regimes),
+        series=tuple(series),
+        crosscheck_first_day=_as_date(crosscheck["first_day"], "data.crosscheck"),
+        crosscheck_last_day=_as_date(crosscheck["last_day"], "data.crosscheck"),
+        crosscheck_tolerance_eur_mwh=float(crosscheck.get("tolerance_eur_mwh", 0.01)),
+    )
+
+
+def _as_date(value: Any, where: str) -> dt.date:
+    """Accept what YAML gives for a date, refuse a timestamp.
+
+    PyYAML turns an unquoted ``2022-01-01`` into a ``date`` already; a
+    quoted one stays a string. A ``datetime`` means someone wrote a time as
+    well, and a delivery day with a time on it is ambiguous about which zone
+    decides — the same trap ``timeline`` refuses.
+    """
+    if isinstance(value, dt.datetime):
+        raise ConfigError(
+            f"{where}: {value!r} carries a time; a delivery day must be a plain date"
+        )
+    if isinstance(value, dt.date):
+        return value
+    if isinstance(value, str):
+        try:
+            return dt.date.fromisoformat(value.strip())
+        except ValueError:
+            raise ConfigError(f"{where}: {value!r} is not an ISO date") from None
+    raise ConfigError(f"{where}: expected a date, got {type(value).__name__}")
 
 
 def _optional_float(value: Any) -> float | None:
