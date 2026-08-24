@@ -86,6 +86,16 @@ If D's prices were assumed known, there would be no forecasting problem and no
 content. **Hard rule: no variable used to decide on day D carries a timestamp later
 than 12:00 CET on D-1.** Enforced by a test, not by discipline.
 
+**"12:00 CET" resolved to local noon.** `[Certain]` on the ambiguity, `[Likely]` on the
+reading. The phrase is unambiguous only in winter: Spain is on CEST from late March to
+late October, so a literal fixed UTC+1 sits at 11:00 UTC all year, while noon on the
+market clock is 11:00 UTC in winter and 10:00 UTC in summer. `timeline.gate_close_utc`
+implements **12:00 Europe/Madrid**, for two reasons. It is what the market does — OMIE
+quotes session times in peninsular local time. And it is the conservative of the two:
+in summer it closes the information set an hour *earlier*, so anything that passes the
+no-lookahead test under this definition passes under the other as well. One constant,
+in one module.
+
 ### 2.3 Bidding simplification, and what it costs
 
 A charge/discharge schedule is committed and settled at realised prices — equivalent
@@ -251,7 +261,7 @@ better RMSE that does not convert into captured spread is not an improvement.
 - **Primary source:** ESIOS API (Red Eléctrica de España).
 - **Cross-check:** OMIE `marginalpdbc` files, validated against ESIOS for at least
   one month.
-- **Format:** Parquet, one file per regime, snapshot date in the filename.
+- **Format:** Parquet, one file per grid, snapshot date in the filename.
 - **Downloaded once.** After the snapshot the download code is not modified. The
   project risk is not the MILP — a 192-period problem solves in milliseconds — it is
   losing a week to file plumbing.
@@ -259,6 +269,102 @@ better RMSE that does not convert into captured spread is not an improvement.
 Series: day-ahead marginal price, plus wind, solar and demand **forecast** series as
 exogenous forecaster inputs. Using *realised* wind or demand is information leakage
 and destroys the backtest.
+
+### 5.1 The four indicators, and why these four
+
+Verified against the live catalogue on 24 August 2026 rather than taken from
+memory. `[Certain]` — the numbers below were read back from the API.
+
+| Column | Indicator | Name | Geography |
+|---|---|---|---|
+| `price_eur_mwh` | **600** | Precio mercado SPOT Diario | 3 (España) |
+| `demand_forecast_mw` | **1775** | Previsión diaria D+1 demanda | 8741 (Península) |
+| `wind_forecast_mw` | **1777** | Previsión diaria D+1 eólica | 8741 (Península) |
+| `solar_forecast_mw` | **1779** | Previsión diaria D+1 fotovoltaica | 8741 (Península) |
+
+Two things went wrong on the way to that table, and both are the kind that produce a
+plausible wrong number rather than an error.
+
+### 5.2 The geography trap
+
+**Indicator 600 carries six geographies** — Portugal, France, Spain, Germany, Belgium
+and the Netherlands — and returns them *interleaved on the same timestamps*, Portugal
+first. `[Certain]` Any code that deduplicates on the timestamp alone therefore keeps
+the **Portuguese** price and calls it Spanish.
+
+The Iberian market couples the two, so they are equal whenever the interconnector is
+uncongested — which is most of the time. Measured over January 2024: they differ in
+**36 of 744 periods, by up to €39.07/MWh.** Frequent enough to matter for an
+arbitrage result, rare enough to survive any amount of eyeballing.
+
+So `geo_id` is a required field on every series in `config/params.yaml`, the client
+refuses a multi-geography indicator that was not told which one to keep, and the
+filter is applied client-side even when the server was asked to do it — a silently
+ignored query parameter is the other half of the same bug.
+
+### 5.3 Two forecast families, and only one survives the gate
+
+A forecast is defined by its **vintage** — the moment it was made. Neither ESIOS
+family carries a "made at" field; both are indexed by the *target* timestamp, so
+they are indistinguishable in shape.
+
+- **`Previsión diaria D+1`** (1775/1777/1779) — published once a day, covering D+1.
+  Vintage fixed at D-1, never rewritten.
+- **Rolling** (460 demand, 541 wind, 542 photovoltaic) — a live operational series,
+  overwritten as the day approaches and passes. A historical query returns the last
+  value written, which for a past day was written an hour or two before that hour,
+  or during it.
+
+The vintages are not documented, so they were measured. Two comparisons, using wind
+(1777 against 541) and realised generation (551):
+
+| | D+1 (1777) | Rolling (541) |
+|---|---|---|
+| **A future day** (2026-08-25, queried 2026-08-24) | agree with each other to RMSE **126 MW**, correlation 0.9986 | |
+| **A completed day** (2026-08-22) against realised | RMSE 1106 MW | RMSE **624 MW** |
+| **March 2024** against realised | RMSE 2043 MW | RMSE **896 MW** |
+
+Before the day happens the two series are nearly the same forecast. After it happens
+they are not, and the rolling one has moved toward what occurred. Same series, same
+target hours — so the rolling values were rewritten in between. `[Certain]`
+
+Note what this is *not*: an argument that 624 MW is suspiciously accurate. It is
+ordinary for a 1–3 hour horizon, just as 1106 MW is ordinary for a 12–36 hour one.
+Neither is anomalous for its own horizon. What identifies the vintage is that two
+series describing the same quantity separate only once the target has passed.
+
+Only the D+1 family is available at the gate. Using the rolling one would let the
+forecast policy score against the perfect-foresight bound while holding information
+the oracle is supposed to be alone in having, inflating the headline ratio by an
+unmeasurable amount.
+
+### 5.4 Granularity is observed, never assumed
+
+The market moved to 15-minute MTUs on delivery day 1 October 2025. **ESIOS moved
+indicator 600 onto a 15-minute grid on 1 January 2025**, nine months earlier.
+`[Certain]` Through that pre-period the four values inside each hour are identical —
+the hourly clearing price republished on the finer grid ahead of the go-live.
+
+Measured: the maximum spread within an hour is exactly **0.0000 €/MWh** up to
+30 September 2025, and **€65.50** on 1 October. The regime boundary in §1.1 is
+therefore confirmed from the data itself and not only from the market notice, which
+is a stronger thing to be able to say.
+
+Consequently the snapshot builder downsamples that stretch back to hourly — **and
+only because it is provably lossless.** It verifies that every target period is
+constant across the finer ones and refuses otherwise, so this can never quietly
+become an average that discards real spread.
+
+The forecast series get the opposite treatment. They are still hourly today, after
+the market moved. Forward-filling them onto the 96-period grid would be a modelling
+decision belonging to the forecaster slice, and freezing it here would make it
+unrevisable without re-pulling — which invariant 6 forbids. So **each file holds
+exactly one grid** and the mismatch stays visible for slice 4 to resolve
+deliberately.
+
+The asymmetry is deliberate: collapsing a series whose extra resolution is provably
+empty loses nothing, whereas expanding one whose extra resolution does not exist
+would invent data.
 
 **Time zone.** Everything stored in UTC, presented in `Europe/Madrid`. DST
 transitions produce 23- and 25-hour days (92 and 100 quarter-hourly periods). Code

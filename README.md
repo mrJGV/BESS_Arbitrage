@@ -30,19 +30,28 @@ Three policies, one optimiser, the only difference between them being the price 
 
 ```bash
 uv sync
-uv run pytest          # golden test, Δt-invariance, binary necessity, DST
+uv run pytest          # golden test, Δt-invariance, binary necessity, DST,
+                       # snapshot integrity — no network, no ESIOS token
 ```
+
+The frozen data snapshot is committed, so a clone reproduces every result
+without an API token. See [data/README.md](data/README.md) for provenance and
+`data/manifest.json` for row counts and checksums.
 
 ## Repository layout
 
 ```
-config/params.yaml     every numeric parameter, plus backend/solver selection
-data/                  frozen Parquet snapshot + manifest (provenance, sha256)
-docs/DECISIONS.md      modelling rationale
-src/bess_arb/model/    the MILP, behind a pluggable backend Protocol
-src/bess_arb/policy/   floor / forecast / oracle — price vectors, nothing more
-src/bess_arb/backtest/ rolling-horizon loop and metrics
-tests/                 the gates: golden, Δt-invariance, binaries, no-lookahead
+config/params.yaml       every numeric parameter, plus backend/solver selection
+data/                    frozen Parquet snapshot + manifest (provenance, sha256)
+docs/DECISIONS.md        modelling rationale
+src/bess_arb/timeline.py UTC storage, Europe/Madrid delivery days, derived
+                         periods-per-day, the 12:00 D-1 information gate
+src/bess_arb/model/      the MILP, behind a pluggable backend Protocol
+src/bess_arb/data/       one-shot ESIOS pull, OMIE cross-check, snapshot manifest
+src/bess_arb/policy/     floor / forecast / oracle — price vectors, nothing more
+src/bess_arb/backtest/   rolling-horizon loop and metrics
+tests/                   the gates: golden, Δt-invariance, binaries, DST,
+                         snapshot integrity, no-lookahead, import boundary
 ```
 
 ## Licence
