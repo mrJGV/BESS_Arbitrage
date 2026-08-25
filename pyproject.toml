@@ -111,7 +111,10 @@ source_modules = [
     "bess_arb.cli",
     "bess_arb.config",
     "bess_arb.timeline",
+    "bess_arb.series",
     "bess_arb.data",
+    "bess_arb.policy",
+    "bess_arb.backtest",
 ]
 forbidden_modules = ["pyomo", "highspy", "pyoptinterface", "gurobipy"]
 
@@ -138,5 +141,17 @@ forbidden_modules = [
     "bess_arb.cli",
     "bess_arb.config",
     "bess_arb.timeline",
+    "bess_arb.series",
     "bess_arb.data",
+    "bess_arb.policy",
+    "bess_arb.backtest",
 ]
+
+[[tool.importlinter.contracts]]
+# A policy is a price vector (CLAUDE.md invariant 2). The moment one can
+# reach the backtest loop it can start carrying state across days, and
+# "policies differ only in the prices they pass" stops being structural.
+name = "Policies do not reach into the backtest"
+type = "forbidden"
+source_modules = ["bess_arb.policy"]
+forbidden_modules = ["bess_arb.backtest", "bess_arb.cli"]

@@ -67,8 +67,14 @@ def test_the_scan_looks_at_the_modules_it_claims_to() -> None:
         "cli.py",
         "config.py",
         "timeline.py",
+        "series.py",
         "esios.py",
         "omie.py",
+        "floor.py",
+        "oracle.py",
+        "runner.py",
+        "metrics.py",
+        "bound.py",
     } <= scanned
 
 
@@ -104,7 +110,9 @@ def test_importing_the_non_modelling_half_does_not_load_a_solver() -> None:
     program = (
         "import sys;"
         " import bess_arb, bess_arb.cli, bess_arb.config, bess_arb.model,"
-        " bess_arb.timeline, bess_arb.data.esios, bess_arb.data.omie;"
+        " bess_arb.timeline, bess_arb.series, bess_arb.data.esios,"
+        " bess_arb.data.omie, bess_arb.policy, bess_arb.backtest.runner,"
+        " bess_arb.backtest.bound, bess_arb.backtest.metrics;"
         " loaded = sorted(m for m in sys.modules if m.split('.')[0] in"
         f" {sorted(SOLVER_ROOTS)});"
         " print(loaded)"

@@ -72,12 +72,41 @@ data:
       geo_id: 8741
 
   # Independent validation against the market operator's own files. One
-  # month is the register's minimum; June 2024 sits inside the hourly regime
+  # month is the stated minimum; June 2024 sits inside the hourly regime
   # where marginalpdbc has its classic layout.
   crosscheck:
     first_day: 2024-06-01
     last_day: 2024-06-30
     tolerance_eur_mwh: 0.01
+
+# --- Horizon protocol ------------------------------------------------------
+# DECISIONS.md §2.1 and §2.6. Expressed in *delivery days*, not in hours,
+# because a delivery day is not always 24 hours long: §2.1's "48-hour window,
+# first 24 implemented" means "solve D and D+1, commit D", which is 47 hours
+# around the March transition and 49 around the October one. Writing 48 here
+# would be invariant 4's failure in the one place it is least visible.
+horizon:
+  window_days: 2            # solved horizon: D plus D+1
+  implement_days: 1         # committed and settled: D only
+  warmup_days: 7            # simulated, then excluded from every metric
+  soc_initial_fraction: 0.5 # 10 MWh, the arbitrary state the warm-up removes
+
+# --- Perfect-foresight bound ----------------------------------------------
+# The §2.4 annual-window solve: the same optimiser over a whole year with SoC
+# free across days, to separate the value of horizon from the value of
+# information. Reported twice — portable on HiGHS with the tolerance below,
+# reference on a cluster with a commercial solver. See hpc/README.md.
+bound:
+  annual:
+    # A whole calendar year inside the hourly regime, so the annual solve and
+    # the rolling oracle it is compared against cover exactly the same days.
+    first_day: 2024-01-01
+    last_day: 2024-12-31
+    # ~35,000 variables and 8,760 binaries. An exact gap is not affordable
+    # here, unlike on a window solve; the tolerance is stated rather than
+    # inherited so the published number carries the slack it was found with.
+    mip_gap: 0.001
+    time_limit_s: 3600.0
 
 # --- Modelling stack -------------------------------------------------------
 backend: pyomo              # pyomo | poi (the port, when it exists)
