@@ -102,6 +102,33 @@ _TERMINATION_MAP: dict[TerminationCondition, SolveStatus] = {
 }
 
 
+def _finite_or_none(value: Any) -> float | None:
+    """The dual bound, or ``None`` where the solver reported no usable one.
+
+    An unsolved MILP's bound is ±inf, which is true but useless in a JSON
+    artifact and would make :attr:`Solution.relative_gap` infinite rather
+    than absent. Absent is the honest encoding of "not reported".
+    """
+    if value is None:
+        return None
+    bound = float(value)
+    return bound if np.isfinite(bound) else None
+
+
+def _version_string(value: Any) -> str | None:
+    """Normalise Pyomo's version tuple to a plain string.
+
+    Provenance for ``results/annual_bound.json``: a number produced with a
+    time limit is only traceable if the version that produced it is recorded
+    next to it. A string, so no solver-owned type crosses the boundary.
+    """
+    if value is None:
+        return None
+    if isinstance(value, tuple | list):
+        return ".".join(str(part) for part in value)
+    return str(value)
+
+
 def _normalise_status(results: Results) -> SolveStatus:
     """Map Pyomo's termination codes onto the project's own enum.
 
@@ -259,6 +286,9 @@ class PyomoBatteryMILP:
             p_d_mw=self._values(m.p_d),
             soc_mwh=self._values(m.soc),
             dt_h=self._dt_h,
+            objective_bound=_finite_or_none(results.objective_bound),
+            solver_name=self._solver_config.name,
+            solver_version=_version_string(results.solver_version),
         )
 
     def _clamp_soc(self, soc_initial: float) -> float:

@@ -132,6 +132,14 @@ class Solution:
     ``objective`` is the solver's own objective value, not a recomputation
     from the dispatch vectors. The two agreeing is a test, not an
     assumption — see ``tests/test_model_golden.py``.
+
+    ``objective_bound`` is the dual bound the solver finished with. A
+    :attr:`SolveStatus.FEASIBLE` result is uninterpretable without it — the
+    difference between "an incumbent" and "an incumbent within 0.1% of
+    optimal" is the whole content of a gap-limited run, and the annual-window
+    bound of ``docs/DECISIONS.md`` §2.4 is reported as exactly that. The
+    provenance fields carry which solver, at which version, produced the
+    number; both are plain strings, so nothing solver-typed escapes.
     """
 
     status: SolveStatus
@@ -140,6 +148,9 @@ class Solution:
     p_d_mw: FloatArray
     soc_mwh: FloatArray
     dt_h: float
+    objective_bound: float | None = None
+    solver_name: str | None = None
+    solver_version: str | None = None
 
     def __post_init__(self) -> None:
         n = self.p_c_mw.shape[0]
@@ -154,6 +165,21 @@ class Solution:
     @property
     def n_periods(self) -> int:
         return int(self.p_c_mw.shape[0])
+
+    @property
+    def relative_gap(self) -> float | None:
+        """``|bound − incumbent| / |incumbent|``, or ``None`` if unreported.
+
+        The usual MIP relative gap. Guarded on the denominator because a
+        window in which the battery correctly stays idle has objective
+        exactly zero, and a division there would turn a closed gap into a
+        NaN reported as a failure to converge.
+        """
+        if self.objective_bound is None or not math.isfinite(self.objective_bound):
+            return None
+        return abs(self.objective_bound - self.objective) / max(
+            abs(self.objective), 1e-10
+        )
 
     @property
     def charged_mwh(self) -> float:
