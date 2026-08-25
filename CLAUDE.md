@@ -1,12 +1,31 @@
 # Project context
 
+<!-- toc -->
+**Contents**
+
+- [Project context](#project-context)
+- [Invariants — never violate](#invariants--never-violate)
+- [Modelling layer](#modelling-layer)
+- [Working rules](#working-rules)
+- [Git](#git)
+
+<!-- /toc -->
+
 Arbitrage demonstrator for a 10 MW / 20 MWh battery in the Spanish
 day-ahead market (OMIE). The deliverable is a clean repository with a
 three-bar chart. It is not a paper and not a platform.
 
-Published rationale: `docs/DECISIONS.md`. Private working notes are
-gitignored; do not add them to the repo and do not describe their
-contents in tracked files or commit messages.
+Published rationale: `docs/DECISIONS.md`. **It is frozen as of the v1
+close and is not updated as work proceeds** — what becomes public is
+decided once, at the repo freeze.
+
+The working record lives in `docs/private/`, which is gitignored.
+Decisions, design and measurements are recorded there as work proceeds.
+Do not add those files to the repo, do not name them, and do not
+describe their contents in tracked files or commit messages.
+
+Every document carries a generated index. After editing one, run
+`make toc`; `make check` fails if an index is stale.
 
 # Invariants — never violate
 
@@ -96,7 +115,8 @@ Pyomo backend this means a persistent/APPSI interface, not a plain
   changing the MILP, give the modelling choice in one or two lines (why a
   binary, why that big-M, why that sign) rather than only producing code.
   Flag any constraint whose tightness you are unsure of. Put that
-  rationale in the **commit body**, so it outlives the chat.
+  rationale in the code and in the working record — not in the commit
+  message.
 - Golden test is mandatory: a four-period price series with two low and
   two high prices, optimal profit computed by hand and verified. It must
   pass before any refactor. Prices `[10, 10, 100, 100]`, Δt = 1,
@@ -118,6 +138,7 @@ Pyomo backend this means a persistent/APPSI interface, not a plain
 # Git
 
 Conventional Commits with module scope (`feat(model):`, `test(model):`,
-`chore(data):`, ...). One branch per slice, PR into `main`, squash-merge
-with CI green. Tags `v0`/`v1`/`v2` mark the version ladder. The data
+`chore(data):`, ...). **A commit message says what changed, never why** —
+the reasoning belongs in the code and the documents, which already carry
+it. One branch per slice, PR into `main`, squash-merge with CI green. Tags `v0`/`v1`/`v2` mark the version ladder. The data
 snapshot gets its own commit so the freeze point is one hash.

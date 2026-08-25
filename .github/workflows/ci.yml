@@ -39,5 +39,11 @@ jobs:
       - name: Import boundary
         run: uv run lint-imports
 
+      # Every document carries a generated index; a renamed section breaks
+      # its own anchor silently, so staleness is a CI failure. The private
+      # notes are gitignored and the tool skips whatever is not present.
+      - name: Document indexes
+        run: uv run python tools/toc.py --check README.md CLAUDE.md docs/DECISIONS.md data/README.md hpc/README.md
+
       - name: Tests
         run: uv run pytest -q

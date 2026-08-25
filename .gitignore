@@ -1,6 +1,6 @@
 # --- Private working notes ------------------------------------------------
 # Published rationale lives in docs/DECISIONS.md.
-MODEL_DECISIONS.md
+docs/private/
 
 # --- Secrets --------------------------------------------------------------
 .env
@@ -35,6 +35,12 @@ env/
 figures/
 outputs/
 *.log
+hpc/logs/
+
+# A backtest summary is minutes of local compute from a committed snapshot,
+# so it is regenerated rather than tracked. results/annual_bound*.json stays
+# committed: it is the run a reader without a cluster cannot reproduce.
+results/backtest_*.json
 
 # --- OS / editor ----------------------------------------------------------
 .DS_Store
