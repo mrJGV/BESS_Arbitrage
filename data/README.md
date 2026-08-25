@@ -1,5 +1,20 @@
 # Frozen data snapshot — 24 August 2026
 
+<!-- toc -->
+**Contents**
+
+- [Files](#files)
+- [Series](#series)
+  - [The geography is load-bearing](#the-geography-is-load-bearing)
+  - [Only the D+1 forecast family is usable](#only-the-d1-forecast-family-is-usable)
+  - [Granularity was observed, not assumed](#granularity-was-observed-not-assumed)
+- [Daylight saving](#daylight-saving)
+- [Cross-check against OMIE](#cross-check-against-omie)
+- [Negative prices](#negative-prices)
+- [Provenance and licence](#provenance-and-licence)
+
+<!-- /toc -->
+
 Day-ahead prices and day-ahead forecast series for the Spanish peninsular
 system. **Downloaded once and committed**, so a clone reproduces every result
 in this repository without an ESIOS token and without the network.

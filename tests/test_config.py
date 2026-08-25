@@ -44,6 +44,17 @@ data:
     first_day: 2024-06-01
     last_day: 2024-06-30
     tolerance_eur_mwh: 0.01
+horizon:
+  window_days: 2
+  implement_days: 1
+  warmup_days: 7
+  soc_initial_fraction: 0.5
+bound:
+  annual:
+    first_day: 2024-01-01
+    last_day: 2024-12-31
+    mip_gap: 0.001
+    time_limit_s: 3600.0
 backend: pyomo
 solver:
   name: highs
@@ -140,6 +151,51 @@ def test_the_regimes_are_the_two_the_market_has() -> None:
     assert hourly.first_day == dt.date(2022, 1, 1)
 
 
+def test_the_horizon_protocol_is_the_published_one() -> None:
+    """docs/DECISIONS.md §2.1 and §2.6, in days rather than in hours.
+
+    "48-hour window, first 24 implemented" is what §2.1 says, and it is the
+    ordinary-day statement of a two-day window with one day committed. On a
+    transition day the same protocol solves 47 or 49 hours; writing 48 into
+    the config would put invariant 4's failure in the one file where nothing
+    else could catch it.
+    """
+    horizon = load_config().horizon
+
+    assert horizon.window_days == 2
+    assert horizon.implement_days == 1
+    assert horizon.warmup_days == 7
+    assert horizon.soc_initial_fraction == 0.5
+    assert horizon.soc_initial_mwh(20.0) == 10.0
+
+
+def test_the_annual_bound_covers_a_whole_year_inside_one_regime() -> None:
+    """docs/DECISIONS.md §2.4: the days must be comparable with a rolling run."""
+    config = load_config()
+    annual = config.bound.annual
+    hourly = config.data.regime("hourly")
+
+    assert annual.first_day == dt.date(2024, 1, 1)
+    assert annual.last_day == dt.date(2024, 12, 31)
+    assert hourly.first_day <= annual.first_day
+    assert annual.last_day <= hourly.last_day
+    # Looser than a window solve, and stated rather than inherited: 8,760
+    # binaries cannot afford the exact gap the golden test needs.
+    assert annual.mip_gap is not None
+    assert config.solver.mip_gap is not None
+    assert annual.mip_gap > config.solver.mip_gap
+
+
+def test_a_horizon_that_implements_more_than_it_solves_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """Settling days the optimiser never saw would be silent nonsense."""
+    text = MINIMAL_CONFIG.replace("implement_days: 1", "implement_days: 3")
+
+    with pytest.raises(ConfigError, match="implement_days"):
+        load_config(_write(tmp_path, text))
+
+
 def test_the_snapshot_filename_carries_the_freeze_date() -> None:
     data = load_config().data
 
@@ -181,6 +237,8 @@ def test_with_c_deg_changes_only_the_degradation_cost(tmp_path: Path) -> None:
     assert swept.battery.charge_tariff_eur_mwh == (config.battery.charge_tariff_eur_mwh)
     assert swept.solver == config.solver
     assert swept.seed == config.seed
+    assert swept.horizon == config.horizon
+    assert swept.bound == config.bound
 
 
 def test_a_misspelled_key_is_an_error_not_a_shrug(tmp_path: Path) -> None:

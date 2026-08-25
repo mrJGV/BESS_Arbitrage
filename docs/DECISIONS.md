@@ -1,5 +1,40 @@
 # Modelling decisions
 
+<!-- toc -->
+**Contents**
+
+- [1. Scope](#1-scope)
+  - [1.1 Time granularity — hybrid](#11-time-granularity--hybrid)
+  - [1.2 Market scope — day-ahead only](#12-market-scope--day-ahead-only)
+  - [1.3 Asset](#13-asset)
+- [2. Horizon protocol](#2-horizon-protocol)
+  - [2.1 Rolling window](#21-rolling-window)
+  - [2.2 Information set — the gate at 12:00 CET on D-1](#22-information-set--the-gate-at-1200-cet-on-d-1)
+  - [2.3 Bidding simplification, and what it costs](#23-bidding-simplification-and-what-it-costs)
+  - [2.4 The perfect-foresight bound](#24-the-perfect-foresight-bound)
+  - [2.5 The floor: a no-information policy](#25-the-floor-a-no-information-policy)
+  - [2.6 Warm-up](#26-warm-up)
+- [3. Physical and economic model](#3-physical-and-economic-model)
+  - [3.1 Formulation](#31-formulation)
+  - [3.2 Why the binaries are not redundant](#32-why-the-binaries-are-not-redundant)
+  - [3.3 Degradation cost — the parameter that sets everything](#33-degradation-cost--the-parameter-that-sets-everything)
+  - [3.4 Network tariffs on charged energy — parametrised on purpose](#34-network-tariffs-on-charged-energy--parametrised-on-purpose)
+  - [3.5 Price-taker](#35-price-taker)
+- [4. Metrics](#4-metrics)
+  - [4.1 What the frozen snapshot gives (v1: floor and bound only)](#41-what-the-frozen-snapshot-gives-v1-floor-and-bound-only)
+- [5. Data](#5-data)
+  - [5.1 The four indicators, and why these four](#51-the-four-indicators-and-why-these-four)
+  - [5.2 The geography trap](#52-the-geography-trap)
+  - [5.3 Two forecast families, and only one survives the gate](#53-two-forecast-families-and-only-one-survives-the-gate)
+  - [5.4 Granularity is observed, never assumed](#54-granularity-is-observed-never-assumed)
+- [6. Solver and modelling stack](#6-solver-and-modelling-stack)
+  - [6.1 Why Pyomo first and PyOptInterface second](#61-why-pyomo-first-and-pyoptinterface-second)
+  - [6.2 Backend abstraction](#62-backend-abstraction)
+  - [6.3 Persistent re-solve with HiGHS — measured](#63-persistent-re-solve-with-highs--measured)
+- [7. What was deliberately not done](#7-what-was-deliberately-not-done)
+
+<!-- /toc -->
+
 Why this project is built the way it is. Every non-obvious choice is recorded here
 with its rationale, and the ones that were rejected are recorded too — a decision is
 only legible next to the alternative it beat.
@@ -64,6 +99,25 @@ governed by a single principle:
 quarter-hourly). This removes the end-of-horizon artefact without inventing a
 terminal value function.
 
+**Encoded in days, not hours.** `config/params.yaml` says `window_days: 2` and
+`implement_days: 1`, because "48 hours" is the ordinary-day statement of the
+protocol and delivery days are 23 or 25 hours twice a year. The period counts come
+from `timeline.periods_in_day`, so a two-day window is 47, 48 or 49 periods (188,
+192 or 196 quarter-hourly) and the loop never multiplies anything by 24.
+
+That has one consequence in the modelling layer worth stating, because it looks
+like a violation of "build the model once" and is not. A backend is constructed
+with a fixed `n_periods`, so three window lengths need three model instances. The
+backtest holds a pool keyed on window length; it reaches its final size of three
+within the first year of a regime and every subsequent day re-solves an existing
+instance. The rule being protected is *no rebuild inside the loop*, and it holds.
+Padding a short window with invented periods would satisfy the letter of "one
+model" while putting fabricated prices into the optimisation, which is worse.
+
+The last day of a snapshot cannot be decided — its horizon runs past the end of
+the data — so the run stops one day short rather than solving one day under a
+shorter protocol. §2.4's guarantee is that the cadence is identical throughout.
+
 Rejected:
 
 - *Free terminal SoC worth nothing* → the optimiser empties the battery every day,
@@ -122,11 +176,61 @@ inter-day arbitrage should be worth little — carrying energy overnight costs t
 intraday cycle, which almost always pays more — so the gap should be small.
 `[Likely]` It is measured rather than asserted.
 
+**Measured, and it is exactly zero — proven, not estimated.** Calendar year 2024,
+hourly: 8,784 periods, 35,136 variables, 8,784 binaries, `c_deg = 17`. HiGHS 1.15.1
+finished in **24.5 seconds** on a laptop, an order of magnitude less trouble than the
+solve was budgeted for.
+
+Three numbers close the question between them:
+
+| | € |
+|---|---|
+| Annual solve, best integer solution found | 331,669.726 |
+| Annual solve, dual bound | **331,670.108** |
+| Rolling 48-hour oracle, settled over the same days | **331,670.108** |
+
+The rolling oracle's dispatch is a *feasible point* of the annual problem — same
+battery, same opening SoC, and neither problem constrains the terminal SoC — so the
+annual optimum is at least what it earns. The dual bound says the annual optimum is at
+most €331,670.108. Ceiling and floor are the same number, so **the rolling 48-hour
+horizon attains the annual optimum**. The value of horizon is zero, not merely small.
+`[Certain]` for this asset, this year, this regime.
+
+The €0.38 the CLI prints as a negative "value of horizon" is not the answer to the
+question; it is the annual solve's own unclosed gap. HiGHS stopped with an incumbent
+€0.38 under its dual bound because that relative gap, 1.15e-6, sits inside its
+tolerance. Put plainly: **366 small exact solves found a better dispatch than one big
+gap-limited solve did**, and the big solve's dual bound is what certifies it optimal.
+Neither run answers the question alone, which is why both are reported.
+
+That is what §2.4 exists to establish. The whole gap between a policy and the bound is
+attributable to *information*, with no horizon effect mixed into it — an assumption
+that was sitting under the headline and is now a measurement.
+
+The cluster provision is not wasted; it is unneeded for this case. It stands for the
+quarter-hourly annual solve, four times the size, and for any run that does not close
+as easily.
+
 That annual solve is ~35,000 variables and 8,760 binaries hourly (~140,000 and 35,040
 quarter-hourly), so it is reported twice: a reference run on a cluster with a
 commercial solver, and a portable run on HiGHS with an explicit gap tolerance. It is
 *not* relaxed to an LP — that would inflate the denominator, which is the one thing a
-bound must never do.
+bound must never do. `hpc/README.md` covers what runs where and why the main backtest
+deliberately does not go to the cluster; `results/annual_bound.json` carries the
+incumbent, the dual bound, the gap actually reached, the wall clock, the solver
+version and the machine, so a reader who cannot re-run it can still see how much
+slack the number carries.
+
+Both runs are the same command with `--solver` changed, through the same
+`model/pyomo.py`. That is §6.2's claim being exercised rather than asserted: **if
+running on the cluster ever needs a code change, the abstraction has leaked**, and
+that is a finding rather than an inconvenience.
+
+The comparison is against the *rolling* oracle over the identical days, so it
+isolates one thing. The rolling oracle's own dispatch is a feasible trajectory for
+the free-horizon problem from the same opening state of charge, so the annual optimum
+cannot be lower — which makes the ordering a proof rather than a tolerance, and it is
+asserted as one in `tests/test_backtest_bound.py`.
 
 ### 2.5 The floor: a no-information policy
 
@@ -141,6 +245,49 @@ historically most expensive, using hour-of-day × month averages, without lookin
 the specific day. Implemented as a *price vector* — the climatological average —
 passed to the same optimiser. It is not a separate heuristic with its own
 constraints; that is what keeps it comparable.
+
+Three implementation choices, each of which could have gone the other way:
+
+**The average is causal.** For delivery day D it uses only prices stamped before the
+gate. Invariant 1 is written on *timestamps*, so this discards the afternoon and
+evening of D-1 even though those prices were published the day before and are
+genuinely known at noon. The strictness costs half a day out of a multi-year average
+and buys a floor that needs no carve-out in the no-lookahead test — and a test with a
+carve-out guards less than it appears to.
+
+Being causal has a real cost: the average starts empty and fills up, so early in a
+run the floor decides on less. A thin floor is a *weak* floor, and a weak floor
+flatters everything measured against it — the direction that favours this project's
+own claim, and therefore the one to distrust. So the policy counts its own fallbacks
+instead of the cost being argued about.
+
+Measured on the frozen snapshot, and the pattern is tighter than "thin early":
+
+| Regime | Fallback periods | Share | Days affected |
+|---|---|---|---|
+| Hourly | 1,128 / 65,662 | 1.7% | 35 of 1,368 |
+| Quarter-hourly | 4,128 / 62,592 | 6.6% | 32 of 326 |
+
+Every affected day is **the last day of a month or the first two of the next, during
+the first pass through the calendar only**. The mechanism: the window for 31 January
+reaches into February, and no February key has any history yet; by 3 February it does,
+and in every later year both months are fully populated. The two lower tiers are just
+the opening days — `no_history` is exactly the first window, when nothing predates the
+gate, and `grand_mean` is exactly half of the second day's clock.
+
+So the quarter-hourly figure is **not** a thinner floor. It is the same one-pass cost
+over a run a quarter as long, and that regime spans about ten months so it never gets
+a second pass. `[Certain]`
+
+**The average expands; it does not roll.** No trailing window, no decay. A lookback
+length would be a tuning knob on the null hypothesis, and a null hypothesis that can
+be tuned is one that can be moved until the headline looks right.
+
+**The key is local wall-clock time**, `(month, hour, minute)` in Europe/Madrid — the
+solar trough and the evening peak sit at local clock times. For the hourly regime
+that is exactly hour-of-day × month; for the quarter-hourly one it extends to the 96
+quarters without ever indexing into the day, which is what keeps it correct on the
+92- and 100-period transition days.
 
 ### 2.6 Warm-up
 
@@ -254,6 +401,77 @@ Consequently, `charge_tariff_eur_mwh` defaults to 0 and is reported with sensiti
 Forecast RMSE is reported in a secondary table and **is never the headline.** A
 better RMSE that does not convert into captured spread is not an improvement.
 
+**Decision and settlement are separate.** A policy's schedule is decided against the
+prices it believed and settled against the prices that cleared. For the oracle those
+coincide; for every other policy they do not, and the difference *is* the cost of
+imperfect information — the quantity this project exists to measure. So settlement
+never reads the solver's objective, it recomputes from the dispatch at realised
+prices.
+
+**Years come from the days, not from the day count.** Hours are summed from each
+day's own period count, so a 23- or 25-hour day contributes what it was, and the
+divisor is 365.25 × 24. Over a full year the two transition days cancel and the error
+would hide; the same code annualises two-month runs where they do not.
+
+**"% of bound" is undefined, not zero, when the bound earns nothing.** Above the
+market's spread the correct dispatch is to stay idle and every policy scores zero;
+reporting 0% would read as failure where the truthful answer is that the ratio has no
+content.
+
+### 4.1 What the frozen snapshot gives (v1: floor and bound only)
+
+The forecast policy arrives in the next slice, so this is the ladder with its middle
+rung missing. Reported here because the floor's height is the point of §2.5 — it is
+what any later claim has to beat.
+
+Hourly regime, 1,361 evaluated days (2022-01-08 → 2025-09-29):
+
+| `c_deg` | Floor €/MW/yr | Bound €/MW/yr | Floor as % of bound | Bound cycles/yr |
+|---|---|---|---|---|
+| 5 | 39,204 | 48,881 | 80.2% | 491.6 |
+| **17** | **27,237** | **38,161** | **71.4%** | **400.4** |
+| 40 | 11,005 | 23,458 | 46.9% | 245.2 |
+
+Quarter-hourly regime, 319 evaluated days (2025-10-08 → 2026-08-22):
+
+| `c_deg` | Floor €/MW/yr | Bound €/MW/yr | Floor as % of bound | Bound cycles/yr |
+|---|---|---|---|---|
+| 5 | 62,816 | 70,184 | 89.5% | 521.1 |
+| **17** | **50,472** | **58,916** | **85.7%** | **426.9** |
+| 40 | 34,421 | 42,301 | 81.4% | 302.8 |
+
+Three readings, and only the first is comfortable.
+
+**Cycles per year are physically sane.** 400 hourly and 427 quarter-hourly at
+`c_deg = 17` — near one cycle a day, which is what a 2-hour asset in a market with
+one solar trough and one evening peak should do. The §3.3 alarm was that ~700 would
+mean `c_deg` was too low; it does not fire, and it is checked as a test rather than
+read off a table.
+
+**The floor is high, and it is meant to be.** 71–86% of perfect foresight from an
+average of the last few years, with no forecast at all. That is precisely why §2.5
+insists on having one: without it, a forecast policy scoring 85% would read as skill.
+The number the next slice has to beat is not zero, it is 85.7%.
+
+**The two regimes are not comparable** (§1.1), and the gap between them is not
+mostly about resolution. The hourly window is 2022–2025 and carries the gas crisis;
+the quarter-hourly one is a calmer market clearing at finer granularity. Only the
+quarter-hourly figures describe the market as it exists.
+
+The floor's share of the bound falls as `c_deg` rises, in **both** regimes — 80.2% to
+46.9% hourly, 89.5% to 81.4% quarter-hourly. The direction is arithmetic rather than a
+finding: net profit is `E · (m − c_deg)` for `E` MWh discharged at a gross margin `m`,
+the floor's `m` is lower than the oracle's because it picks worse hours, and
+`(m_f − c)/(m_o − c)` decreases in `c` whenever that holds.
+
+The rates differ — 33 points against 8 — because the oracle can respond to a higher
+threshold and the floor cannot. The oracle drops its marginal cycles and keeps the
+wide-spread ones, so its *net* margin per MWh barely moves across the sweep; that is
+`c_deg` working as the minimum-spread threshold of §3.3. The floor selects on
+hour-of-day only and cannot tell an ordinary day from a wide-spread one, so the same
+threshold filters its trades far less and its net margin collapses. `[Certain]` on the
+direction, `[Likely]` on the attribution of the rate.
+
 ---
 
 ## 5. Data
@@ -265,6 +483,12 @@ better RMSE that does not convert into captured spread is not an improvement.
 - **Downloaded once.** After the snapshot the download code is not modified. The
   project risk is not the MILP — a 192-period problem solves in milliseconds — it is
   losing a week to file plumbing.
+- **Reading it back lives elsewhere.** `src/bess_arb/series.py`, not
+  `src/bess_arb/data/`. Loading a committed Parquet is ordinary application code that
+  the backtest, the forecaster and the chart all need; putting it in the frozen
+  package would make "not modified after the snapshot" quietly untrue. The loader
+  validates and refuses — it never fills a gap — because a silently patched index
+  produces a profit figure that traces back to no published price.
 
 Series: day-ahead marginal price, plus wind, solar and demand **forecast** series as
 exogenous forecaster inputs. Using *realised* wind or demand is information leakage

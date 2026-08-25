@@ -1,0 +1,61 @@
+{
+  "annual_window": {
+    "first_day": "2024-01-01",
+    "last_day": "2024-12-31",
+    "regime": "hourly",
+    "dt_h": 1.0,
+    "periods": 8784,
+    "variables": 35136,
+    "binaries": 8784,
+    "status": "optimal",
+    "proven_optimal": true,
+    "objective_eur": 331669.73,
+    "objective_bound_eur": 331670.11,
+    "relative_gap": 1.15e-06,
+    "charged_mwh": 8800.371,
+    "discharged_mwh": 7489.535,
+    "equivalent_cycles": 374.477,
+    "soc_initial_mwh": 10.0,
+    "soc_final_mwh": 0.0,
+    "wall_clock_s": 14.755,
+    "solver_name": "highs",
+    "solver_version": "1.15.1",
+    "mip_gap_requested": 0.001,
+    "time_limit_s": 3600.0
+  },
+  "battery": {
+    "p_max_mw": 10.0,
+    "e_max_mwh": 20.0,
+    "eta_rt": 0.85,
+    "c_deg_eur_mwh": 17.0,
+    "charge_tariff_eur_mwh": 0.0
+  },
+  "backend": "pyomo",
+  "environment": {
+    "python": "3.12.13",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "machine": "AMD64",
+    "processor": "Intel64 Family 6 Model 126 Stepping 5, GenuineIntel",
+    "cpu_count": 8
+  },
+  "rolling_oracle": {
+    "policy": "oracle",
+    "c_deg_eur_mwh": 17.0,
+    "days": 366,
+    "hours": 8784.0,
+    "years": 1.002053,
+    "profit_eur": 331670.11,
+    "profit_eur_per_mw_year": 33099.05,
+    "charged_mwh": 8802.136,
+    "discharged_mwh": 7491.035,
+    "equivalent_cycles": 374.552,
+    "equivalent_cycles_per_year": 373.78,
+    "non_optimal_windows": 0,
+    "fraction_of_bound": null
+  },
+  "value_of_horizon": {
+    "annual_minus_rolling_eur": -0.38,
+    "fraction_of_rolling": -1e-06,
+    "within_annual_solve_gap": true
+  }
+}

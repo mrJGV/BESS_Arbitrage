@@ -21,9 +21,12 @@ from bess_arb.timeline import Regime
 
 __all__ = [
     "DEFAULT_CONFIG_PATH",
+    "AnnualBoundConfig",
+    "BoundConfig",
     "Config",
     "ConfigError",
     "DataConfig",
+    "HorizonConfig",
     "RegimeWindow",
     "SeriesSpec",
     "load_config",
@@ -105,12 +108,73 @@ class DataConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class HorizonConfig:
+    """The rolling-window protocol, in delivery days (DECISIONS.md §2.1, §2.6).
+
+    Days rather than hours on purpose. "48-hour window, first 24 implemented"
+    describes ordinary days; on a DST transition the same protocol solves 47
+    or 49 hours, and the period counts come from
+    :func:`bess_arb.timeline.periods_in_day` rather than from arithmetic here.
+    """
+
+    window_days: int = 2
+    implement_days: int = 1
+    warmup_days: int = 7
+    soc_initial_fraction: float = 0.5
+
+    def __post_init__(self) -> None:
+        if self.window_days < 1:
+            raise ValueError(f"window_days must be at least 1, got {self.window_days}")
+        if not 1 <= self.implement_days <= self.window_days:
+            raise ValueError(
+                "implement_days must lie in [1, window_days], got "
+                f"{self.implement_days} with window_days={self.window_days}"
+            )
+        if self.warmup_days < 0:
+            raise ValueError(
+                f"warmup_days must be non-negative, got {self.warmup_days}"
+            )
+        if not 0.0 <= self.soc_initial_fraction <= 1.0:
+            raise ValueError(
+                "soc_initial_fraction must lie in [0, 1], got "
+                f"{self.soc_initial_fraction}"
+            )
+
+    def soc_initial_mwh(self, e_max_mwh: float) -> float:
+        return self.soc_initial_fraction * e_max_mwh
+
+
+@dataclass(frozen=True, slots=True)
+class AnnualBoundConfig:
+    """The §2.4 annual-window solve: which days, and with how much slack."""
+
+    first_day: dt.date
+    last_day: dt.date
+    mip_gap: float | None
+    time_limit_s: float | None
+
+    def __post_init__(self) -> None:
+        if self.last_day < self.first_day:
+            raise ValueError(
+                f"bound.annual: last_day {self.last_day} precedes "
+                f"first_day {self.first_day}"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class BoundConfig:
+    annual: AnnualBoundConfig
+
+
+@dataclass(frozen=True, slots=True)
 class Config:
     """Everything ``config/params.yaml`` currently declares."""
 
     battery: BatteryParams
     c_deg_sensitivity: tuple[float, ...]
     data: DataConfig
+    horizon: HorizonConfig
+    bound: BoundConfig
     backend: str
     solver: SolverConfig
     seed: int
@@ -132,6 +196,8 @@ class Config:
             battery=battery,
             c_deg_sensitivity=self.c_deg_sensitivity,
             data=self.data,
+            horizon=self.horizon,
+            bound=self.bound,
             backend=self.backend,
             solver=self.solver,
             seed=self.seed,
@@ -172,7 +238,18 @@ def load_config(path: Path | None = None) -> Config:
         raise ConfigError(f"config file {path} does not contain a mapping")
 
     _reject_unknown(
-        raw, {"battery", "sensitivity", "data", "backend", "solver", "seed"}, "<root>"
+        raw,
+        {
+            "battery",
+            "sensitivity",
+            "data",
+            "horizon",
+            "bound",
+            "backend",
+            "solver",
+            "seed",
+        },
+        "<root>",
     )
 
     battery_section = _section(raw, "battery")
@@ -233,10 +310,52 @@ def load_config(path: Path | None = None) -> Config:
         battery=battery,
         c_deg_sensitivity=c_deg_sensitivity,
         data=_load_data(_section(raw, "data"), path),
+        horizon=_load_horizon(_section(raw, "horizon")),
+        bound=_load_bound(_section(raw, "bound")),
         backend=backend,
         solver=solver,
         seed=seed,
     )
+
+
+def _load_horizon(section: Mapping[str, Any]) -> HorizonConfig:
+    _reject_unknown(
+        section,
+        {"window_days", "implement_days", "warmup_days", "soc_initial_fraction"},
+        "horizon",
+    )
+    try:
+        return HorizonConfig(
+            window_days=int(section["window_days"]),
+            implement_days=int(section["implement_days"]),
+            warmup_days=int(section["warmup_days"]),
+            soc_initial_fraction=float(section["soc_initial_fraction"]),
+        )
+    except KeyError as error:
+        raise ConfigError(f"horizon is missing {error.args[0]!r}") from None
+    except ValueError as error:
+        raise ConfigError(f"horizon: {error}") from None
+
+
+def _load_bound(section: Mapping[str, Any]) -> BoundConfig:
+    _reject_unknown(section, {"annual"}, "bound")
+    annual = _section(section, "annual")
+    _reject_unknown(
+        annual, {"first_day", "last_day", "mip_gap", "time_limit_s"}, "bound.annual"
+    )
+    try:
+        return BoundConfig(
+            annual=AnnualBoundConfig(
+                first_day=_as_date(annual["first_day"], "bound.annual"),
+                last_day=_as_date(annual["last_day"], "bound.annual"),
+                mip_gap=_optional_float(annual.get("mip_gap")),
+                time_limit_s=_optional_float(annual.get("time_limit_s")),
+            )
+        )
+    except KeyError as error:
+        raise ConfigError(f"bound.annual is missing {error.args[0]!r}") from None
+    except ValueError as error:
+        raise ConfigError(f"bound.annual: {error}") from None
 
 
 def _load_data(section: Mapping[str, Any], config_path: Path) -> DataConfig:
