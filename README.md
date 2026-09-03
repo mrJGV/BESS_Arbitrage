@@ -20,9 +20,10 @@ prices are known when the schedule is committed. The result is measured against
 two reference points: a perfect-foresight upper bound and a no-information floor
 policy.
 
-> **Status: work in progress.** This README is a stub; the headline number, the
-> chart and the mandatory limitations section land at v2. See
-> [docs/DECISIONS.md](docs/DECISIONS.md) for the modelling rationale.
+> **Status: work in progress.** This README is a stub; the chart and the
+> mandatory limitations section land at the freeze. The three policies and their
+> numbers are below. See [docs/DECISIONS.md](docs/DECISIONS.md) for the
+> modelling rationale.
 
 ## The question
 
@@ -56,20 +57,34 @@ without an API token. See [data/README.md](data/README.md) for provenance and
 
 ## Where it stands
 
-The forecast policy is the next slice, so the ladder currently has its middle
-rung missing. Quarter-hourly regime, 319 evaluated days, `c_deg = 17 €/MWh`:
+All three rungs of the ladder exist. Quarter-hourly regime, 319 evaluated days,
+`c_deg = 17 €/MWh`:
 
 | Policy | €/MW/year | % of bound | Cycles/year |
 |---|---|---|---|
 | Floor (hour-of-day × month averages) | 50,472 | 85.7% | 451 |
-| Forecast | *slice 4* | | |
+| **Forecast** (LightGBM, gated at 12:00 D-1) | **51,167** | **86.8%** | 427 |
 | Bound (perfect foresight) | 58,916 | 100% | 427 |
 
-Two things to read off that table rather than past it. **The floor is high**,
-which is exactly why [§2.5](docs/DECISIONS.md) insists on having one: a
-forecast policy scoring 85% would otherwise read as skill. And **cycles per
-year are sane** — near one a day for a 2-hour asset, so the degradation cost
-is in a plausible range and the rest of the numbers are worth reading.
+Three things to read off that table rather than past it.
+
+**The forecast is worth 1.1 points, not 86.8 of them.** The floor is what makes
+that sayable — exactly why [§2.5](docs/DECISIONS.md) insists on having one. A
+forecast policy scoring 86.8% with no floor beneath it reads as skill; measured
+against a dumb hour-of-day average it is a modest edge, and that is the honest
+description.
+
+**The edge grows with the degradation cost, and at the low end it is negative.**
+Across `c_deg` = 5 / 17 / 40 the margin over the floor runs −1.8, +1.1, +2.9
+points. A linear degradation cost is a minimum-spread threshold, so a high one
+turns the question from *which hours* into *which days* — and the floor, whose
+only signal is hour of day, cannot answer that at all. At `c_deg` = 5 the
+threshold barely bites, and the forecast over-trades on its own noise: 567
+cycles a year against perfect foresight's 521.
+
+**Cycles per year are sane** — near one a day for a 2-hour asset, so the
+degradation cost is in a plausible range and the rest of the numbers are worth
+reading.
 
 The annual-window bound closed in 24.5 seconds, and the rolling 48-hour oracle
 turns out to **attain it exactly**: the oracle's own dispatch is feasible for
@@ -93,6 +108,8 @@ src/bess_arb/series.py   reading the frozen snapshot back, validated
 src/bess_arb/model/      the MILP, behind a pluggable backend Protocol
 src/bess_arb/data/       one-shot ESIOS pull, OMIE cross-check, snapshot manifest
 src/bess_arb/policy/     floor / forecast / oracle — price vectors, nothing more
+src/bess_arb/forecast/   features with the instant each became knowable, and the
+                         LightGBM fit — the only place the library is imported
 src/bess_arb/backtest/   rolling-horizon loop, metrics, the annual bound
 tests/                   the gates: golden, Δt-invariance, binaries, DST,
                          snapshot integrity, floor causality, no-lookahead,

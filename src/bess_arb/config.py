@@ -26,6 +26,7 @@ __all__ = [
     "Config",
     "ConfigError",
     "DataConfig",
+    "ForecastConfig",
     "HorizonConfig",
     "RegimeWindow",
     "SeriesSpec",
@@ -102,6 +103,18 @@ class DataConfig:
             self.directory / f"{regime_name}_{self.snapshot_date.isoformat()}.parquet"
         )
 
+    def exogenous_paths(self, regime_name: str) -> tuple[Path, ...]:
+        """Sibling files holding this regime's series on a coarser grid.
+
+        A regime whose own grid is finer than a published series keeps that
+        series in its own file, named for the grid it is really on — the
+        snapshot never resamples (see ``data/README.md``). Globbed rather than
+        constructed, so the reader does not have to know which grids the pull
+        happened to produce.
+        """
+        pattern = f"{regime_name}_exog_*_{self.snapshot_date.isoformat()}.parquet"
+        return tuple(sorted(self.directory.glob(pattern)))
+
     @property
     def manifest_path(self) -> Path:
         return self.directory / "manifest.json"
@@ -162,6 +175,49 @@ class AnnualBoundConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ForecastConfig:
+    """The point forecaster: what it reads, how often it refits, how it fits.
+
+    The LightGBM hyperparameters are carried through as opaque mappings rather
+    than named fields. Everywhere else in this file an unknown key is an
+    error, and that is right for a config whose keys the project defines; here
+    the keys are LightGBM's, and re-declaring its parameter list would only
+    guarantee a stale copy of it. The trade is stated rather than silent: a
+    typo in ``level.num_leavs`` is caught by LightGBM at fit time, not here.
+    """
+
+    lags_days: tuple[int, ...]
+    refit_days: int
+    min_train_days: int
+    min_deviation_days: int
+    level_rounds: int
+    deviation_rounds: int
+    validation_days: int
+    early_stopping_rounds: int
+    threads: int
+    level: Mapping[str, Any]
+    deviation: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        if not self.lags_days:
+            raise ValueError("forecast.lags_days must not be empty")
+        if any(lag < 1 for lag in self.lags_days):
+            raise ValueError(
+                f"forecast.lags_days must be positive, got {list(self.lags_days)}"
+            )
+        if self.validation_days < 1:
+            raise ValueError(
+                f"forecast.validation_days must be at least 1, got "
+                f"{self.validation_days}"
+            )
+        if self.early_stopping_rounds < 1:
+            raise ValueError(
+                f"forecast.early_stopping_rounds must be at least 1, got "
+                f"{self.early_stopping_rounds}"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class BoundConfig:
     annual: AnnualBoundConfig
 
@@ -175,6 +231,7 @@ class Config:
     data: DataConfig
     horizon: HorizonConfig
     bound: BoundConfig
+    forecast: ForecastConfig
     backend: str
     solver: SolverConfig
     seed: int
@@ -198,6 +255,7 @@ class Config:
             data=self.data,
             horizon=self.horizon,
             bound=self.bound,
+            forecast=self.forecast,
             backend=self.backend,
             solver=self.solver,
             seed=self.seed,
@@ -245,6 +303,7 @@ def load_config(path: Path | None = None) -> Config:
             "data",
             "horizon",
             "bound",
+            "forecast",
             "backend",
             "solver",
             "seed",
@@ -312,6 +371,7 @@ def load_config(path: Path | None = None) -> Config:
         data=_load_data(_section(raw, "data"), path),
         horizon=_load_horizon(_section(raw, "horizon")),
         bound=_load_bound(_section(raw, "bound")),
+        forecast=_load_forecast(_section(raw, "forecast")),
         backend=backend,
         solver=solver,
         seed=seed,
@@ -335,6 +395,50 @@ def _load_horizon(section: Mapping[str, Any]) -> HorizonConfig:
         raise ConfigError(f"horizon is missing {error.args[0]!r}") from None
     except ValueError as error:
         raise ConfigError(f"horizon: {error}") from None
+
+
+def _load_forecast(section: Mapping[str, Any]) -> ForecastConfig:
+    _reject_unknown(
+        section,
+        {
+            "lags_days",
+            "refit_days",
+            "min_train_days",
+            "min_deviation_days",
+            "level_rounds",
+            "deviation_rounds",
+            "validation_days",
+            "early_stopping_rounds",
+            "threads",
+            "level",
+            "deviation",
+        },
+        "forecast",
+    )
+    lags = section.get("lags_days")
+    if not isinstance(lags, list) or not lags:
+        raise ConfigError("forecast.lags_days must be a non-empty list")
+    for name in ("level", "deviation"):
+        if not isinstance(section.get(name), Mapping):
+            raise ConfigError(f"forecast.{name} must be a mapping")
+    try:
+        return ForecastConfig(
+            lags_days=tuple(int(lag) for lag in lags),
+            refit_days=int(section["refit_days"]),
+            min_train_days=int(section["min_train_days"]),
+            min_deviation_days=int(section["min_deviation_days"]),
+            level_rounds=int(section["level_rounds"]),
+            deviation_rounds=int(section["deviation_rounds"]),
+            validation_days=int(section["validation_days"]),
+            early_stopping_rounds=int(section["early_stopping_rounds"]),
+            threads=int(section["threads"]),
+            level=dict(section["level"]),
+            deviation=dict(section["deviation"]),
+        )
+    except KeyError as error:
+        raise ConfigError(f"forecast is missing {error.args[0]!r}") from None
+    except ValueError as error:
+        raise ConfigError(f"forecast: {error}") from None
 
 
 def _load_bound(section: Mapping[str, Any]) -> BoundConfig:

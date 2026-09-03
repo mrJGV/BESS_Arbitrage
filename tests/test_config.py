@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from bess_arb.config import DEFAULT_CONFIG_PATH, ConfigError, load_config
+from bess_arb.forecast.features import FIRST_COMPLETE_LAG_DAYS
 
 MINIMAL_CONFIG = """
 battery:
@@ -55,6 +56,20 @@ bound:
     last_day: 2024-12-31
     mip_gap: 0.001
     time_limit_s: 3600.0
+forecast:
+  lags_days: [2, 3]
+  refit_days: 30
+  min_train_days: 365
+  min_deviation_days: 30
+  level_rounds: 600
+  deviation_rounds: 400
+  validation_days: 60
+  early_stopping_rounds: 50
+  threads: 4
+  level:
+    num_leaves: 63
+  deviation:
+    num_leaves: 31
 backend: pyomo
 solver:
   name: highs
@@ -209,6 +224,48 @@ def test_a_delivery_day_with_a_time_on_it_is_rejected(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ConfigError, match="carries a time"):
+        load_config(_write(tmp_path, text))
+
+
+def test_the_forecast_lags_start_after_the_last_complete_delivery_day() -> None:
+    """The shipped config cannot ask for a lag that reaches past the gate.
+
+    ``build_features`` refuses one, so this would surface as an exception at
+    the first forecast rather than as a wrong number — but the shipped file is
+    what a reader checks, and a lag of 1 sitting in it would read as endorsed.
+    """
+    lags = load_config().forecast.lags_days
+
+    assert lags
+    assert min(lags) >= FIRST_COMPLETE_LAG_DAYS
+
+
+def test_the_forecast_hyperparameters_reach_the_loader_untouched() -> None:
+    """LightGBM's own keys pass through; the project's are validated.
+
+    The asymmetry is deliberate (see ``ForecastConfig``): re-declaring
+    LightGBM's parameter list here would only guarantee a stale copy of it.
+    """
+    forecast = load_config().forecast
+
+    assert forecast.level["num_leaves"] > 0
+    assert forecast.deviation["num_leaves"] > 0
+    assert forecast.refit_days >= 1
+    assert forecast.min_train_days >= 365
+
+
+def test_a_missing_forecast_key_is_named(tmp_path: Path) -> None:
+    text = MINIMAL_CONFIG.replace("  refit_days: 30\n", "")
+
+    with pytest.raises(ConfigError, match="refit_days"):
+        load_config(_write(tmp_path, text))
+
+
+def test_an_unknown_forecast_key_is_refused(tmp_path: Path) -> None:
+    """A silently ignored key would produce a plausible wrong number."""
+    text = MINIMAL_CONFIG.replace("  refit_days: 30\n", "  refit_dayz: 30\n")
+
+    with pytest.raises(ConfigError, match="refit_dayz"):
         load_config(_write(tmp_path, text))
 
 
