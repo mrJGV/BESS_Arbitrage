@@ -115,6 +115,7 @@ source_modules = [
     "bess_arb.data",
     "bess_arb.policy",
     "bess_arb.backtest",
+    "bess_arb.forecast",
 ]
 forbidden_modules = ["pyomo", "highspy", "pyoptinterface", "gurobipy"]
 
@@ -145,6 +146,7 @@ forbidden_modules = [
     "bess_arb.data",
     "bess_arb.policy",
     "bess_arb.backtest",
+    "bess_arb.forecast",
 ]
 
 [[tool.importlinter.contracts]]
@@ -155,3 +157,34 @@ name = "Policies do not reach into the backtest"
 type = "forbidden"
 source_modules = ["bess_arb.policy"]
 forbidden_modules = ["bess_arb.backtest", "bess_arb.cli"]
+
+[[tool.importlinter.contracts]]
+# The same rule as the solver boundary, for the same reason: one module
+# imports the library and everything else talks to an interface.
+#
+# The list stops short of `bess_arb.forecast` itself, and that is a limit of
+# this tool rather than a hole in the rule: its `build_forecaster` imports
+# `forecast.lgbm` inside the function body, and import-linter reads the source,
+# so it cannot tell a deferred import from a live one. That one module is
+# covered instead by tests/test_import_boundary.py, which imports the package
+# for real and looks at sys.modules — the only check that can tell whether a
+# lazy import is actually lazy.
+#
+# `bess_arb.policy.forecast` is on the list and belongs there: it declares the
+# two methods it needs as a Protocol of its own rather than importing the
+# trainer for a type annotation, so the policy layer names LightGBM nowhere at
+# all.
+name = "LightGBM stays inside bess_arb.forecast.lgbm"
+type = "forbidden"
+source_modules = [
+    "bess_arb.config",
+    "bess_arb.timeline",
+    "bess_arb.series",
+    "bess_arb.data",
+    "bess_arb.backtest",
+    "bess_arb.model",
+    "bess_arb.forecast.features",
+    "bess_arb.policy",
+]
+forbidden_modules = ["lightgbm"]
+as_packages = false

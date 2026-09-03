@@ -25,8 +25,18 @@ import bess_arb
 
 SOLVER_ROOTS = frozenset({"pyomo", "highspy", "pyoptinterface", "gurobipy"})
 
+HEAVY_ROOTS = SOLVER_ROOTS | {"lightgbm"}
+"""What must not be in ``sys.modules`` after importing the application half.
+
+LightGBM is here for the same reason the solvers are: one module imports it,
+everything else talks to an interface. The static contracts cannot check it —
+the three modules that name it defer the import, and reading the source cannot
+tell a deferred import from a live one — so this is the mechanism that does.
+"""
+
 PACKAGE_ROOT = Path(bess_arb.__file__ or "").resolve().parent
 MODEL_ROOT = PACKAGE_ROOT / "model"
+FORECAST_ROOT = PACKAGE_ROOT / "forecast"
 
 # Solver-free even inside model/: these are what every backend and every
 # caller share, so a solver type reaching them would leak everywhere.
@@ -72,6 +82,9 @@ def test_the_scan_looks_at_the_modules_it_claims_to() -> None:
         "omie.py",
         "floor.py",
         "oracle.py",
+        "forecast.py",
+        "features.py",
+        "lgbm.py",
         "runner.py",
         "metrics.py",
         "bound.py",
@@ -101,20 +114,54 @@ def test_the_spec_and_the_protocol_are_solver_free(name: str) -> None:
     assert not offending, f"model/{name} imports {sorted(offending)}"
 
 
-def test_importing_the_non_modelling_half_does_not_load_a_solver() -> None:
+def test_no_lightgbm_import_outside_the_forecast_backend() -> None:
+    """LightGBM lives in ``forecast/lgbm.py``, and nowhere else statically.
+
+    The three modules that legitimately name it defer the import, so this
+    checks the rest of the package the same way the solver scan does.
+    ``test_importing_the_application_half_loads_nothing_heavy`` is what proves
+    the deferred ones really are deferred.
+    """
+    deferred = {
+        FORECAST_ROOT / "lgbm.py",
+        FORECAST_ROOT / "__init__.py",
+        PACKAGE_ROOT / "policy" / "__init__.py",
+        PACKAGE_ROOT / "policy" / "forecast.py",
+    }
+    offenders = {
+        path.relative_to(PACKAGE_ROOT).as_posix()
+        for path in PACKAGE_ROOT.rglob("*.py")
+        if path not in deferred and "lightgbm" in _imported_roots(path)
+    }
+
+    assert not offenders, f"LightGBM is imported by {sorted(offenders)}"
+
+
+def test_the_detector_catches_a_lightgbm_import() -> None:
+    """Positive control for the check above."""
+    assert "lightgbm" in _imported_roots(FORECAST_ROOT / "lgbm.py")
+
+
+def test_importing_the_application_half_loads_nothing_heavy() -> None:
     """The dynamic half: a lazy import that fires anyway would pass the AST scan.
 
-    ``get_backend`` resolves backends by string precisely so that importing
-    the config or the CLI does not drag Pyomo into the process.
+    ``get_backend`` resolves backends by string, and ``build_forecaster``
+    imports its trainer inside the function body, precisely so that importing
+    the config or the CLI drags in neither Pyomo nor LightGBM. This is the
+    only check that can tell the difference between a deferred import and one
+    that merely looks deferred — ``bess_arb.policy`` and ``bess_arb.forecast``
+    are in the list because the static contracts cannot cover them.
     """
     program = (
         "import sys;"
         " import bess_arb, bess_arb.cli, bess_arb.config, bess_arb.model,"
         " bess_arb.timeline, bess_arb.series, bess_arb.data.esios,"
-        " bess_arb.data.omie, bess_arb.policy, bess_arb.backtest.runner,"
+        " bess_arb.data.omie, bess_arb.policy, bess_arb.policy.forecast,"
+        " bess_arb.forecast, bess_arb.forecast.features,"
+        " bess_arb.backtest.runner,"
         " bess_arb.backtest.bound, bess_arb.backtest.metrics;"
         " loaded = sorted(m for m in sys.modules if m.split('.')[0] in"
-        f" {sorted(SOLVER_ROOTS)});"
+        f" {sorted(HEAVY_ROOTS)});"
         " print(loaded)"
     )
     result = subprocess.run(

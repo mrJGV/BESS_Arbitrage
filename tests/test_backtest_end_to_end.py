@@ -64,6 +64,34 @@ def runs() -> dict[str, BacktestResult]:
     }
 
 
+@pytest.fixture(scope="module")
+def forecast_run() -> tuple[BacktestResult, object]:
+    """The third bar, on a shorter window because it costs a fit to produce.
+
+    Twenty days rather than a quarter: the forecaster refits every thirty, so
+    this pays for exactly one fit and still leaves a fortnight past the
+    warm-up to measure. What is asserted below needs no more than that, and
+    the economics of the full period belong to a run rather than to CI.
+    """
+    from bess_arb.forecast import build_forecaster
+
+    prices = load_prices(CONFIG, REGIME)
+    forecaster = build_forecaster(CONFIG, REGIME)
+    policy = build_policy("forecast", prices, forecaster=forecaster)
+    result = run_backtest(
+        prices,
+        policy,
+        CONFIG.battery,
+        regime_of(CONFIG, REGIME),
+        CONFIG.horizon,
+        backend=CONFIG.backend,
+        solver=CONFIG.solver,
+        first_day=FIRST_DAY,
+        last_day=FIRST_DAY + dt.timedelta(days=19),
+    )
+    return result, policy
+
+
 def test_the_run_covers_every_day_it_was_asked_for(
     runs: dict[str, BacktestResult],
 ) -> None:
@@ -155,6 +183,81 @@ def test_a_higher_degradation_cost_suppresses_cycling() -> None:
         cycles.append(summarise(result).equivalent_cycles_per_year)
 
     assert cycles[0] > cycles[1]
+
+
+def test_the_forecast_policy_runs_on_the_snapshot_and_trades(
+    forecast_run: tuple[BacktestResult, object],
+) -> None:
+    """The third bar exists, is solved through the same optimiser, and cycles.
+
+    The window is inside the hourly regime, so the two-stage split does not
+    apply and there is nothing here about intra-hour structure — that is the
+    quarter-hourly run's business. What this pins is that the whole chain
+    from the frozen Parquet through the feature table and a real LightGBM fit
+    to a dispatch produces a schedule at all.
+    """
+    result, _ = forecast_run
+    metrics = summarise(result)
+
+    assert metrics.days > 0
+    assert metrics.discharged_mwh > 0.0
+    assert 50.0 < metrics.equivalent_cycles_per_year < 700.0
+
+
+def test_the_forecast_policy_earns_something_and_not_more_than_foresight() -> None:
+    """The two bounds a point forecast has to sit between.
+
+    Deliberately not ``forecast > floor``. That ordering is the thing the
+    project *measures*, and it genuinely changes sign: on this snapshot the
+    forecast loses to the floor at ``c_deg = 5`` quarter-hourly and beats it by
+    9.6 points of bound at ``c_deg = 40`` hourly. Asserting it here would pin
+    one favourable cell of a table whose whole content is that the cells
+    differ. What must hold in every window and at every degradation cost is
+    that a policy deciding at the gate earns something, and that it does not
+    out-earn a policy that already knows the answer.
+    """
+    prices = load_prices(CONFIG, REGIME)
+    regime = regime_of(CONFIG, REGIME)
+    last = FIRST_DAY + dt.timedelta(days=19)
+
+    from bess_arb.forecast import build_forecaster
+
+    forecaster = build_forecaster(CONFIG, REGIME)
+    profits = {}
+    for name in ("forecast", "oracle"):
+        result = run_backtest(
+            prices,
+            build_policy(name, prices, forecaster=forecaster),
+            CONFIG.battery,
+            regime,
+            CONFIG.horizon,
+            backend=CONFIG.backend,
+            solver=CONFIG.solver,
+            first_day=FIRST_DAY,
+            last_day=last,
+        )
+        profits[name] = summarise(result).profit_eur
+
+    assert profits["forecast"] > 0.0
+    assert profits["forecast"] < profits["oracle"]
+
+
+def test_the_forecast_policy_did_not_fall_back_on_this_window(
+    forecast_run: tuple[BacktestResult, object],
+) -> None:
+    """Mid-2024 has two and a half years behind it, so the model answers.
+
+    The caveat checked rather than trusted, exactly as the floor's is below.
+    A fallback firing here would mean the middle bar of the chart was partly
+    the floor wearing another label, which is the one way this comparison can
+    quietly become circular.
+    """
+    _, policy = forecast_run
+    counts: dict[str, int] = policy.diagnostics()  # type: ignore[attr-defined]
+
+    assert counts["forecast_days"] > 0
+    assert counts["fallback_days"] == 0
+    assert counts["no_history"] == 0
 
 
 def test_the_floor_priced_the_run_off_populated_averages() -> None:

@@ -24,11 +24,14 @@ import pandas as pd
 
 from bess_arb.model.spec import FloatArray
 from bess_arb.policy.floor import FloorPolicy
+from bess_arb.policy.forecast import Forecaster, ForecastPolicy
 from bess_arb.policy.oracle import OraclePolicy
 
 __all__ = [
     "POLICY_NAMES",
     "FloorPolicy",
+    "ForecastPolicy",
+    "Forecaster",
     "OraclePolicy",
     "PricePolicy",
     "build_policy",
@@ -52,25 +55,45 @@ class PricePolicy(Protocol):
     def prices_for(self, day: dt.date, window: pd.DatetimeIndex) -> FloatArray: ...
 
 
-POLICY_NAMES: tuple[str, ...] = ("floor", "oracle")
+POLICY_NAMES: tuple[str, ...] = ("floor", "forecast", "oracle")
 """Registered policies, in the order they read as a ladder.
 
-``forecast`` joins in slice 4. Until it exists the pair is a floor and a
-bound with nothing between them, which is a chart with a gap in it rather
-than a result.
+No information, a point forecast, perfect foresight. That ordering is the
+chart, and the middle bar only means something because the outer two are
+there: ``docs/DECISIONS.md`` §2.5 — without a floor the headline percentage is
+unfalsifiable.
 """
 
 
-def build_policy(name: str, prices: pd.Series) -> PricePolicy:
+def build_policy(
+    name: str,
+    prices: pd.Series,
+    *,
+    forecaster: Forecaster | None = None,
+) -> PricePolicy:
     """Construct a policy by the name the CLI and the config use.
 
-    Both policies are built from the same realised price series, which is not
-    a contradiction: the oracle *reads* it for the window it is deciding, the
-    floor only ever reads the part of it that predates the gate.
+    Every policy is built from the same realised price series, which is not a
+    contradiction: the oracle *reads* it for the window it is deciding, and
+    the other two only ever read the part of it that predates the gate.
+
+    ``forecaster`` is required for the forecast policy and refused for the
+    others. It is not built here because it is expensive and regime-specific,
+    and because one instance must be shared across a degradation sweep — see
+    :func:`bess_arb.forecast.build_forecaster`.
     """
     if name == "oracle":
         return OraclePolicy(prices)
     if name == "floor":
         return FloorPolicy(prices)
+    if name == "forecast":
+        if forecaster is None:
+            raise ValueError(
+                "the forecast policy needs a fitted forecaster; build one with "
+                "bess_arb.forecast.build_forecaster(config, regime) and pass it "
+                "in. It is deliberately not built here: it is regime-specific "
+                "and must be shared across a c_deg sweep."
+            )
+        return ForecastPolicy(forecaster, FloorPolicy(prices))
     known = ", ".join(POLICY_NAMES)
     raise ValueError(f"unknown policy {name!r}; known policies: {known}")

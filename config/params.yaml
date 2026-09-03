@@ -108,6 +108,82 @@ bound:
     mip_gap: 0.001
     time_limit_s: 3600.0
 
+# --- Point forecaster ------------------------------------------------------
+# LightGBM, deliberately boring: DECISIONS.md §7 puts the contribution in the
+# decision layer, not here. Two stages — an hourly *level* model over the
+# whole history, and an intra-hour *deviation* model over the period where
+# that quantity is not identically zero. The second is built only when the
+# regime's grid is finer than the published series; on the hourly regime it
+# would be fitting a column of zeros. See src/bess_arb/forecast/lgbm.py for
+# the four arms that were measured before settling on this.
+forecast:
+  # Delivery-day lags of the price, keyed on local time of day. They start at
+  # two because the gate is noon on D-1, so D-1 has not finished: D-2 is the
+  # most recent *complete* day. Asking for 1 here is refused in code — it is
+  # the classic lookahead bug in this project, not a tuning choice.
+  lags_days: [2, 3, 4, 5, 6, 7, 8]
+
+  # Refit cadence in delivery days. Every fit is causal whatever this is; the
+  # number buys wall clock at the price of staleness, and stating it means the
+  # staleness is bounded by a config value rather than by convenience.
+  refit_days: 30
+
+  # History required behind the gate before the forecaster will answer at all.
+  # A year, so every month of seasonality is represented once. Below it the
+  # policy falls back to the floor's climatological vector and says so — see
+  # DECISIONS.md §2.5 on why a young policy is reported rather than argued
+  # about. In the headline quarter-hourly regime this never fires: its first
+  # decision day has 3.7 years of price history behind it.
+  min_train_days: 365
+  # The deviation stage needs far less, because its target is mean-zero and
+  # only exists after 1 October 2025.
+  min_deviation_days: 30
+
+  # Boosting rounds are a *ceiling*, not the number fitted. Each fit holds out
+  # the most recent `validation_days` of its own trainable rows and stops when
+  # the validation loss has not improved for `early_stopping_rounds`. Measured
+  # over six cutoffs from 2024-01-01 to 2026-02-01, the level stage's chosen
+  # count ranged 56-157 against the 600 that used to be fitted unconditionally:
+  # the old value was some four times past the optimum, which cost both
+  # accuracy and time. It varies threefold across cutoffs, which is why this is
+  # decided per fit rather than written here as a constant.
+  #
+  # The ceilings stay generous so they never bind in practice; if a fit ever
+  # reaches one, the diagnostics say so and the ceiling is the thing to raise.
+  level_rounds: 600
+  deviation_rounds: 400
+
+  # The validation fold is the last `validation_days` of the rows already
+  # admitted by `trainable_before`, so it is behind the gate like every other
+  # row and adds no lookahead surface. It has to be the most *recent* stretch
+  # to proxy the horizon at all; that it is also the most informative stretch
+  # is the cost, and it is why a fit whose history cannot spare the fold falls
+  # back to the ceiling instead of training on a stub.
+  validation_days: 60
+  early_stopping_rounds: 50
+
+  threads: 4                # pinned: LightGBM is thread-count dependent
+
+  # Passed to LightGBM as given. seed, deterministic and force_row_wise are
+  # set in code so that reproducibility is not one YAML edit away from being
+  # lost (invariant 8).
+  level:
+    learning_rate: 0.05
+    num_leaves: 63
+    min_data_in_leaf: 40
+    feature_fraction: 0.85
+    bagging_fraction: 0.85
+    bagging_freq: 1
+    lambda_l2: 1.0
+  deviation:
+    learning_rate: 0.05
+    num_leaves: 31
+    min_data_in_leaf: 60
+    feature_fraction: 0.85
+    bagging_fraction: 0.85
+    bagging_freq: 1
+    lambda_l2: 1.0
+
 # --- Modelling stack -------------------------------------------------------
 backend: pyomo              # pyomo | poi (the port, when it exists)
 

@@ -349,26 +349,100 @@ def _print_metrics(rows: Iterable[Metrics]) -> None:
         )
 
 
-def _policy_diagnostics(policy: object) -> dict[str, object]:
+def _policy_diagnostics(name: str, policy: object) -> dict[str, object]:
     """Whatever a policy chose to record about itself, if anything.
 
-    Only the floor has anything to say so far: how many periods it had to
-    price off a fallback because the month-of-year average was not yet
-    populated. It is reported rather than argued about because a thin floor
-    flatters everything measured against it.
+    Both informed policies record how often they had to fall back, and both
+    fall back in the flattering direction — a thin floor and an untrained
+    forecaster each make the bar above them look better. So the counts are
+    printed with the result rather than left in the JSON for someone to find.
+
+    The wording is chosen here, in the presentation layer, and not asked of
+    the policies: what a fallback *means* differs between them, and a generic
+    sentence covering both would say nothing about either.
     """
     report = getattr(policy, "diagnostics", None)
     if report is None:
         return {}
     counts: dict[str, int] = report()
-    total = sum(counts.values())
-    fallback = total - counts.get("month_time", 0)
-    if fallback:
-        print(
-            f"    note: {fallback:,} of {total:,} periods "
-            f"({fallback / total:.2%}) were priced off a fallback average"
-        )
+
+    if name == "floor":
+        total = sum(counts.values())
+        fallback = total - counts.get("month_time", 0)
+        if fallback:
+            print(
+                f"    floor:    {fallback:,} of {total:,} periods "
+                f"({fallback / total:.2%}) were priced off a fallback average"
+            )
+    elif name == "forecast":
+        days = counts.get("forecast_days", 0) + counts.get("fallback_days", 0)
+        if counts.get("fallback_days"):
+            print(
+                f"    forecast: {counts['fallback_days']:,} of {days:,} days "
+                f"({counts['fallback_days'] / days:.2%}) fell back to the floor "
+                "for want of training history"
+            )
+        if counts.get("level_only"):
+            served = counts["level_only"] + counts.get("trained", 0)
+            print(
+                f"    forecast: {counts['level_only']:,} of {served:,} periods "
+                "were priced without an intra-hour stage"
+            )
     return {"diagnostics": counts}
+
+
+def _print_forecast_error(forecaster: object, prices: pd.Series) -> dict[str, object]:
+    """The secondary error table.
+
+    ``docs/DECISIONS.md`` §4.1: RMSE is reported and **is not the metric**. It
+    goes below the economics, never above, because a forecast can be more
+    accurate and worth less — what a battery needs is the day's *ordering*, so
+    the rank correlation within each delivery day is printed beside it.
+
+    Lead 0 only: that is the forecast that priced the day the backtest
+    implemented. The second horizon day exists to keep the battery from
+    emptying itself at midnight, and it is never settled.
+    """
+    import numpy as np
+    import pandas as pd
+
+    made = forecaster.predictions(0)  # type: ignore[attr-defined]
+    actual = prices.reindex(made.index)
+    both = made.notna() & actual.notna()
+    made, actual = made[both], actual[both]
+    if made.empty:
+        return {}
+
+    error = made.to_numpy() - actual.to_numpy()
+    day = _delivery_day(actual.index)
+    rho = (
+        pd.DataFrame({"f": made.to_numpy(), "a": actual.to_numpy(), "d": day})
+        .groupby("d")[["f", "a"]]
+        .apply(lambda g: g["f"].corr(g["a"], method="spearman"))
+        .mean()
+    )
+    summary = {
+        "periods": len(made),
+        "rmse_eur_mwh": round(float(np.sqrt(np.mean(error**2))), 3),
+        "mae_eur_mwh": round(float(np.mean(np.abs(error))), 3),
+        "bias_eur_mwh": round(float(np.mean(error)), 3),
+        "mean_daily_rank_correlation": round(float(rho), 4),
+    }
+    print(
+        f"    forecast: error over {summary['periods']:,} lead-0 periods -- "
+        f"RMSE {summary['rmse_eur_mwh']:.2f}  MAE {summary['mae_eur_mwh']:.2f}  "
+        f"bias {summary['bias_eur_mwh']:+.2f} EUR/MWh  "
+        f"daily rank corr {summary['mean_daily_rank_correlation']:.3f}"
+    )
+    return {"forecast_error": summary}
+
+
+def _delivery_day(index: pd.Index) -> pd.Index:
+    import pandas as pd
+
+    from bess_arb.timeline import delivery_day
+
+    return delivery_day(pd.DatetimeIndex(index))
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
@@ -379,6 +453,16 @@ def _cmd_run(args: argparse.Namespace) -> int:
     config, prices, regime, solver = _load(args)
     backend = args.backend or config.backend
     policies: list[str] = args.policy or list(POLICY_NAMES)
+
+    # Once per run, not once per sweep point: the forecast does not depend on
+    # c_deg, so refitting inside the loop would triple the wall clock to
+    # reproduce numbers that are identical by construction.
+    forecaster = None
+    if "forecast" in policies:
+        from bess_arb.forecast import build_forecaster
+
+        print(f"fitting the forecaster on the {args.regime} history", flush=True)
+        forecaster = build_forecaster(config, args.regime)
 
     if args.c_deg:
         sweep: list[float] = list(args.c_deg)
@@ -399,7 +483,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         runs = {}
         built = {}
         for name in policies:
-            built[name] = build_policy(name, prices)
+            built[name] = build_policy(name, prices, forecaster=forecaster)
             runs[name] = run_backtest(
                 prices,
                 built[name],
@@ -436,7 +520,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 "first_day": result.days[0].day.isoformat(),
                 "last_day": result.days[-1].day.isoformat(),
             }
-            summary.update(_policy_diagnostics(built[name]))
+            summary.update(_policy_diagnostics(name, built[name]))
+            if name == "forecast" and forecaster is not None:
+                summary.update(_print_forecast_error(forecaster, prices))
             summaries.append(summary)
 
     if args.json is not None:
