@@ -87,6 +87,30 @@ class Metrics:
     equivalent_cycles_per_year: float
     non_optimal_windows: int
     fraction_of_bound: float | None = None
+    clipped_mwh: float = 0.0
+    """Cleared but not delivered, summed over the days that count.
+
+    Zero under fixed-schedule settlement, where the optimiser's dispatch is
+    feasible by construction. Under curve settlement this is what the "clip,
+    no penalty" rule is knowingly not charging for, so it is reported rather
+    than left implicit — see :mod:`bess_arb.bid.deliver`.
+    """
+
+    clipped_fraction: float = 0.0
+    """Clipped energy as a fraction of discharged throughput.
+
+    The form the number is actually read in: a fraction of a percent means
+    the curves rarely promised what the battery could not deliver, and the
+    settlement rule stands. A large one is the finding itself.
+    """
+
+    mean_curve_steps: float = 1.0
+    """Mean distinct quantities per period across the run, 1.0 for a schedule.
+
+    Near 1.0 under curve settlement means the scenario sweep moved the price
+    level without moving the day's shape, so the curves carry no option value
+    and the extension reduced to the fixed-schedule case.
+    """
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -107,6 +131,9 @@ class Metrics:
                 if self.fraction_of_bound is None
                 else round(self.fraction_of_bound, 6)
             ),
+            "clipped_mwh": round(self.clipped_mwh, 3),
+            "clipped_fraction": round(self.clipped_fraction, 6),
+            "mean_curve_steps": round(self.mean_curve_steps, 3),
         }
 
     def with_bound(self, bound: Metrics) -> Metrics:
@@ -135,6 +162,9 @@ class Metrics:
             equivalent_cycles_per_year=self.equivalent_cycles_per_year,
             non_optimal_windows=self.non_optimal_windows,
             fraction_of_bound=fraction,
+            clipped_mwh=self.clipped_mwh,
+            clipped_fraction=self.clipped_fraction,
+            mean_curve_steps=self.mean_curve_steps,
         )
 
 
@@ -159,6 +189,7 @@ def summarise(result: BacktestResult) -> Metrics:
     charged = float(np.sum([day.charged_mwh for day in days]))
     discharged = float(np.sum([day.discharged_mwh for day in days]))
     cycles = discharged / result.params.e_max_mwh
+    clipped = float(np.sum([day.clipped_mwh for day in days]))
 
     return Metrics(
         policy=result.policy,
@@ -175,4 +206,10 @@ def summarise(result: BacktestResult) -> Metrics:
         non_optimal_windows=sum(
             1 for day in days if day.status is not SolveStatus.OPTIMAL
         ),
+        clipped_mwh=clipped,
+        # Guarded on the denominator: a run that correctly stays idle above
+        # the market's spread discharges nothing, and the ratio has no
+        # content there rather than being infinite.
+        clipped_fraction=clipped / discharged if discharged > 1e-9 else 0.0,
+        mean_curve_steps=float(np.mean([day.curve_steps for day in days])),
     )
