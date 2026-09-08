@@ -34,6 +34,7 @@ __all__ = [
     "Forecaster",
     "OraclePolicy",
     "PricePolicy",
+    "QuantilePolicy",
     "build_policy",
 ]
 
@@ -53,6 +54,25 @@ class PricePolicy(Protocol):
     name: str
 
     def prices_for(self, day: dt.date, window: pd.DatetimeIndex) -> FloatArray: ...
+
+
+@runtime_checkable
+class QuantilePolicy(Protocol):
+    """v2.5's capability: a price *belief* at a stated quantile, not just one.
+
+    The v2.5 bid-curve extension needs K price vectors per window, one per
+    quantile level, to trace a curve through the same optimiser K times — see
+    :func:`bess_arb.bid.scenarios.solve_curves`.
+    This is declared separately from :class:`PricePolicy` rather than folded
+    into it: a policy that cannot answer at a quantile (nothing here requires
+    :class:`ForecastPolicy` to implement it yet) is still a complete
+    :class:`PricePolicy`, and the fixed-schedule v1/v2 code paths must keep
+    working against policies that only ever satisfy the narrower Protocol.
+    """
+
+    def prices_for_quantile(
+        self, day: dt.date, window: pd.DatetimeIndex, tau: float
+    ) -> FloatArray: ...
 
 
 POLICY_NAMES: tuple[str, ...] = ("floor", "forecast", "oracle")
