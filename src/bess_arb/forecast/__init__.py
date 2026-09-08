@@ -52,6 +52,7 @@ def build_forecaster(config: Config, regime_name: str) -> PriceForecaster:
             refit_days=spec.refit_days,
             min_train_days=spec.min_train_days,
             min_deviation_days=spec.min_deviation_days,
+            min_residual_obs=spec.min_residual_obs,
             level_params=dict(spec.level),
             deviation_params=dict(spec.deviation),
             level_rounds=spec.level_rounds,

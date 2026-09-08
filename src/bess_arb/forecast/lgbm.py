@@ -136,6 +136,7 @@ class ForecastSpec:
     refit_days: int
     min_train_days: int
     min_deviation_days: int
+    min_residual_obs: int
     level_params: dict[str, Any]
     deviation_params: dict[str, Any]
     level_rounds: int
@@ -155,6 +156,10 @@ class ForecastSpec:
         if self.min_deviation_days < 1:
             raise ValueError(
                 f"min_deviation_days must be at least 1, got {self.min_deviation_days}"
+            )
+        if self.min_residual_obs < 1:
+            raise ValueError(
+                f"min_residual_obs must be at least 1, got {self.min_residual_obs}"
             )
         for name, rounds in (
             ("level_rounds", self.level_rounds),
@@ -240,6 +245,12 @@ class PriceForecaster:
         self._level_regime = level_regime
         self._spec = spec
         self._two_stage = level_regime.dt_h > regime.dt_h
+        # Realised prices at the target grid — the residual buffer's other
+        # half. `forecast()` already keeps every prediction it has ever made
+        # (`self._predictions`); a causal forecast error is that prediction
+        # minus what this series says actually cleared, so nothing new needs
+        # to be tracked, only joined — see `_causal_residuals`.
+        self._prices = prices
 
         level_prices = (
             prices.resample(level_regime.step).mean() if self._two_stage else prices
@@ -278,6 +289,15 @@ class PriceForecaster:
         # three times the work. Keys make the tallies idempotent.
         self._rung: dict[int, dict[pd.Timestamp, str]] = {0: {}, 1: {}}
         self._declined: set[dt.date] = set()
+        # v2.5's residual ladder, counted for the same reason every other
+        # ladder here is: a run that leaned on the pooled fallback is one
+        # whose scenarios fanned out less than intended, and that shows up as
+        # flat bid curves rather than as an error.
+        self._residual_rung: dict[str, int] = {
+            "bucket": 0,
+            "pooled": 0,
+            "declined": 0,
+        }
         # One entry per fitted stage: the rounds the validation fold chose and
         # whether it got to choose at all. Reported with the result because a
         # count that sits at its ceiling means the ceiling bound the search,
@@ -306,9 +326,7 @@ class PriceForecaster:
 
         stamps = _nanoseconds(window)
         out = np.full(len(stamps), np.nan)
-        target_day = pd.Index(stamps.tz_convert(MARKET_TZ).date)
-        for lead in (0, 1):
-            rows = np.asarray(target_day == day + dt.timedelta(days=lead))
+        for lead, rows in self._lead_rows(day, stamps).items():
             if not rows.any():
                 continue
             out[rows] = self._predict(lead, pd.DatetimeIndex(stamps[rows]))
@@ -321,6 +339,72 @@ class PriceForecaster:
                 "the two horizon days the forecaster builds tables for"
             )
         return out
+
+    def forecast_quantile(
+        self, day: dt.date, window: pd.DatetimeIndex, tau: float
+    ) -> FloatArray | None:
+        """Point forecast, shifted by the causal tau-quantile of past error.
+
+        The v2.5 scenario source for the forecast policy: the same point
+        forecast :meth:`forecast` already produces — same fit, same gate, same
+        decline below ``min_train_days`` — plus one number per horizon day, the
+        tau-quantile of that lead's own causal residuals (see
+        :meth:`_residual_shift`).
+
+        Declines — returns ``None``, and the policy falls back to the floor's
+        quantile ladder — in **two** cases, not one. The first is
+        :meth:`forecast`'s own: a price history shorter than
+        ``min_train_days``. The second is specific to this method: the
+        residual buffer fills only as the backtest asks for forecasts, so for
+        the opening days of a run there are too few causal errors to take a
+        quantile of, and a shift of nothing would make every scenario
+        identical.
+        """
+        if not 0.0 < tau < 1.0:
+            raise ValueError(f"tau must lie strictly between 0 and 1, got {tau}")
+        point = self.forecast(day, window)
+        if point is None:
+            return None
+
+        gate = gate_close_utc(day)
+        stamps = _nanoseconds(window)
+        out = point.copy()
+        for lead, rows in self._lead_rows(day, stamps).items():
+            if not rows.any():
+                continue
+            shift = self._residual_shift(
+                lead, gate, tau, pd.DatetimeIndex(stamps[rows])
+            )
+            if shift is None:
+                # Declining is the point. Leaving the forecast unshifted would
+                # return the *same* vector at every tau, so the K scenario
+                # solves would be K copies of one solve and every curve would
+                # collapse to a single step — the pooled degeneracy of
+                # `_residual_shift`, arrived at from the other direction. The
+                # residual buffer only fills as the backtest asks for
+                # forecasts, so this covers the opening days of a run, when
+                # the floor's climatological ladder has years of history
+                # behind it and this has almost none. Whole window, not the
+                # thin lead alone: half a window of real scenarios and half of
+                # flat ones is a curve that means neither thing.
+                return None
+            out[rows] = out[rows] + shift
+        return out
+
+    def _lead_rows(
+        self, day: dt.date, stamps: pd.DatetimeIndex
+    ) -> dict[int, NDArray[np.bool_]]:
+        """Which of ``stamps`` belong to day D (lead 0) and D+1 (lead 1).
+
+        Shared by :meth:`forecast` and :meth:`forecast_quantile` because both
+        need to know, for the same window, which periods each per-lead model
+        (and now each per-lead residual buffer) is responsible for.
+        """
+        target_day = pd.Index(stamps.tz_convert(MARKET_TZ).date)
+        return {
+            lead: np.asarray(target_day == day + dt.timedelta(days=lead))
+            for lead in (0, 1)
+        }
 
     def diagnostics(self) -> dict[str, int]:
         """Periods served by each rung of the ladder, reported with the result.
@@ -347,6 +431,11 @@ class PriceForecaster:
             "mean_rounds": int(sum(rounds) / len(rounds)) if rounds else 0,
             "max_rounds": max(rounds, default=0),
             "unvalidated_fits": sum(1 for stage in self._fits if not stage.validated),
+            # v2.5 only; all three stay zero on a fixed-schedule run, which is
+            # what a v1/v2 result should show.
+            "residual_bucket": self._residual_rung["bucket"],
+            "residual_pooled": self._residual_rung["pooled"],
+            "residual_declined": self._residual_rung["declined"],
         }
 
     def predictions(self, lead_days: int = 0) -> pd.Series:
@@ -447,6 +536,91 @@ class PriceForecaster:
         self._rung[lead].update(dict.fromkeys(window, rung))
         return np.asarray(out, dtype=np.float64)
 
+    # -- v2.5: the residual-shift quantile source ---------------------------
+
+    def _causal_residuals(
+        self, lead: int, gate: pd.Timestamp
+    ) -> tuple[pd.DatetimeIndex, FloatArray]:
+        """This lead's forecast errors for periods that have already cleared.
+
+        ``realised - forecast`` at every timestamp this lead has ever been
+        asked to predict, restricted to timestamps strictly before ``gate`` —
+        the same "settled by the gate" cutoff every causal quantity in this
+        project uses (see ``FloorPolicy._mean_before``). The forecasts
+        themselves need no separate check here: each one was already made
+        without seeing past its own gate, by :meth:`_predict`, so the only new
+        constraint is that *this* residual's target period has since cleared.
+        """
+        made = self._predictions[lead]
+        if not made:
+            return pd.DatetimeIndex([], tz="UTC"), np.empty(0, dtype=np.float64)
+
+        index = pd.DatetimeIndex(list(made.keys()))
+        forecast_values = np.asarray(list(made.values()), dtype=np.float64)
+        order = index.argsort()
+        index, forecast_values = index[order], forecast_values[order]
+
+        before = index < gate
+        index, forecast_values = index[before], forecast_values[before]
+        if len(index) == 0:
+            return index, np.empty(0, dtype=np.float64)
+
+        realised = self._prices.reindex(index).to_numpy(dtype=np.float64)
+        known = ~np.isnan(realised)
+        return index[known], realised[known] - forecast_values[known]
+
+    def _residual_shift(
+        self, lead: int, gate: pd.Timestamp, tau: float, stamps: pd.DatetimeIndex
+    ) -> FloatArray | None:
+        """Per-period tau-quantile of this lead's causal forecast errors.
+
+        **Bucketed by local time of day, not pooled, and the reason is
+        structural rather than statistical.** A pooled quantile is a single
+        scalar added to every period of the window, so each scenario in the
+        tau-sweep is a *parallel copy* of the same day. The optimiser trades
+        on the differences between periods, and a constant added to every
+        period cancels in every difference — so all K solves return the
+        identical dispatch, every curve collapses to one step, and v2.5
+        degenerates back into v2. Measured on both a wide-spread and a
+        marginal synthetic day: pooled gives mean ``step_counts`` of exactly
+        1.00, with no period in the window carrying a second step.
+
+        Bucketing removes that. Forecast error is not the same size all day —
+        an evening peak is several times harder to call than a midday solar
+        trough — so a per-bucket quantile widens the dear hours more than the
+        cheap ones and the day's *spread* fans out across the sweep, which is
+        what makes the dispatch differ between scenarios at all.
+
+        The key is ``hour x minute`` local, the same one
+        :class:`~bess_arb.policy.floor.FloorPolicy` uses, so the two policies'
+        quantile machinery stays structurally parallel and the comparison
+        between them remains like-for-like. ``min_residual_obs`` is applied
+        per bucket, with the pooled quantile as the fallback for buckets still
+        too thin — the same most-specific-first ladder as the floor. ``None``
+        is returned only when even the pooled sample is short, in which case
+        the caller leaves that lead unshifted: declining a shift is not the
+        same as declining the forecast, which only :meth:`forecast` does.
+        """
+        index, residuals = self._causal_residuals(lead, gate)
+        minimum = self._spec.min_residual_obs
+        if len(residuals) < minimum:
+            self._residual_rung["declined"] += 1
+            return None
+
+        pooled = float(np.quantile(residuals, tau))
+        have = _time_of_day_key(index)
+        want = _time_of_day_key(stamps)
+
+        shift = np.full(len(stamps), pooled, dtype=np.float64)
+        for key in np.unique(want):
+            selected = have == key
+            if int(selected.sum()) < minimum:
+                self._residual_rung["pooled"] += 1
+                continue
+            shift[want == key] = float(np.quantile(residuals[selected], tau))
+            self._residual_rung["bucket"] += 1
+        return shift
+
 
 def _nanoseconds(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
     """A UTC index at nanosecond resolution, whatever came in.
@@ -460,6 +634,22 @@ def _nanoseconds(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
     arriving as a performance bug instead of a correctness one.
     """
     return pd.DatetimeIndex(index).as_unit("ns")
+
+
+def _time_of_day_key(index: pd.DatetimeIndex) -> NDArray[np.int64]:
+    """Local ``hour * 100 + minute`` — the floor policy's bucket key, reused.
+
+    Deliberately the same key :class:`~bess_arb.policy.floor.FloorPolicy`
+    buckets its climatology on, so that the floor's quantile scenarios and the
+    forecast policy's are cut on the same grid. Two policies whose scenario
+    families were shaped differently would differ in a second respect beyond
+    the prices they believe, which is the thing ``docs/DECISIONS.md`` §2.4
+    exists to prevent.
+    """
+    local = index.tz_convert(MARKET_TZ)
+    hour = np.asarray(local.hour, dtype=np.int64)
+    minute = np.asarray(local.minute, dtype=np.int64)
+    return hour * 100 + minute
 
 
 def _spans_enough(table: FeatureTable, rows: pd.Series, days: int) -> bool:

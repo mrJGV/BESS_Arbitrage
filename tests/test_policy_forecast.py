@@ -47,12 +47,27 @@ class _Stub:
     def __init__(self, value: float | None) -> None:
         self._value = value
         self.asked: list[dt.date] = []
+        self.asked_quantiles: list[tuple[dt.date, float]] = []
 
     def forecast(self, day: dt.date, window: pd.DatetimeIndex) -> np.ndarray | None:
         self.asked.append(day)
         if self._value is None:
             return None
         return np.full(len(window), self._value)
+
+    def forecast_quantile(
+        self, day: dt.date, window: pd.DatetimeIndex, tau: float
+    ) -> np.ndarray | None:
+        """The point answer, spread around itself, or the same decline.
+
+        Enough to stand in for the residual shift: what the policy does with a
+        quantile answer is identical whatever produced it, and what it does
+        with a *declined* one is the branch this file exists to pin.
+        """
+        self.asked_quantiles.append((day, tau))
+        if self._value is None:
+            return None
+        return np.full(len(window), self._value + 10.0 * (tau - 0.5))
 
     def diagnostics(self) -> dict[str, int]:
         return {"trained": 0, "level_only": 0, "no_history": 0}
