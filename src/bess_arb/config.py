@@ -190,6 +190,7 @@ class ForecastConfig:
     refit_days: int
     min_train_days: int
     min_deviation_days: int
+    min_residual_obs: int
     level_rounds: int
     deviation_rounds: int
     validation_days: int
@@ -214,6 +215,11 @@ class ForecastConfig:
             raise ValueError(
                 f"forecast.early_stopping_rounds must be at least 1, got "
                 f"{self.early_stopping_rounds}"
+            )
+        if self.min_residual_obs < 1:
+            raise ValueError(
+                f"forecast.min_residual_obs must be at least 1, got "
+                f"{self.min_residual_obs}"
             )
 
 
@@ -405,6 +411,7 @@ def _load_forecast(section: Mapping[str, Any]) -> ForecastConfig:
             "refit_days",
             "min_train_days",
             "min_deviation_days",
+            "min_residual_obs",
             "level_rounds",
             "deviation_rounds",
             "validation_days",
@@ -427,6 +434,7 @@ def _load_forecast(section: Mapping[str, Any]) -> ForecastConfig:
             refit_days=int(section["refit_days"]),
             min_train_days=int(section["min_train_days"]),
             min_deviation_days=int(section["min_deviation_days"]),
+            min_residual_obs=int(section["min_residual_obs"]),
             level_rounds=int(section["level_rounds"]),
             deviation_rounds=int(section["deviation_rounds"]),
             validation_days=int(section["validation_days"]),

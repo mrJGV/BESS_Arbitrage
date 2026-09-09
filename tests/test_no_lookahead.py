@@ -75,6 +75,7 @@ TINY = ForecastSpec(
     refit_days=30,
     min_train_days=200,
     min_deviation_days=30,
+    min_residual_obs=30,
     level_params={"learning_rate": 0.1, "num_leaves": 8, "min_data_in_leaf": 20},
     deviation_params={"learning_rate": 0.1, "num_leaves": 8, "min_data_in_leaf": 20},
     level_rounds=20,

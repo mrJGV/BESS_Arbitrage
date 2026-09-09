@@ -59,6 +59,10 @@ class Forecaster(Protocol):
 
     def forecast(self, day: dt.date, window: pd.DatetimeIndex) -> FloatArray | None: ...
 
+    def forecast_quantile(
+        self, day: dt.date, window: pd.DatetimeIndex, tau: float
+    ) -> FloatArray | None: ...
+
     def diagnostics(self) -> dict[str, int]: ...
 
 
@@ -71,6 +75,7 @@ class ForecastPolicy:
         self._forecaster = forecaster
         self._fallback = fallback
         self._days = {"forecast": 0, "fallback": 0}
+        self._quantile_days = {"forecast": 0, "fallback": 0}
 
     def prices_for(self, day: dt.date, window: pd.DatetimeIndex) -> FloatArray:
         """What the policy believes the window will cost, decided at the gate."""
@@ -79,6 +84,29 @@ class ForecastPolicy:
             self._days["fallback"] += 1
             return self._fallback.prices_for(day, window)
         self._days["forecast"] += 1
+        return believed
+
+    def prices_for_quantile(
+        self, day: dt.date, window: pd.DatetimeIndex, tau: float
+    ) -> FloatArray:
+        """v2.5's scenario source: the same fallback shape as :meth:`prices_for`.
+
+        A day too young for the point forecast is too young for the quantile
+        forecast too — there is no separate model to be short of history for —
+        so it falls back to the floor's own quantile ladder, which is already
+        causal and already answers at any tau, and it does the same when the
+        residual buffer behind the shift is still too thin. Injecting the same
+        :class:`FloorPolicy` instance
+        used by :meth:`prices_for`'s fallback keeps both null hypotheses
+        identical, for the reason given in the module docstring: a second one
+        drifting from the first would stop being a comparison of like with
+        like.
+        """
+        believed = self._forecaster.forecast_quantile(day, window, tau)
+        if believed is None:
+            self._quantile_days["fallback"] += 1
+            return self._fallback.prices_for_quantile(day, window, tau)
+        self._quantile_days["forecast"] += 1
         return believed
 
     def diagnostics(self) -> dict[str, int]:
@@ -91,4 +119,19 @@ class ForecastPolicy:
             "forecast_days": self._days["forecast"],
             "fallback_days": self._days["fallback"],
             **self._forecaster.diagnostics(),
+        }
+
+    def quantile_diagnostics(self) -> dict[str, int]:
+        """The quantile-call counterpart of :meth:`diagnostics`.
+
+        Kept separate rather than merged in: :meth:`prices_for` is called
+        once per decision day, but :meth:`prices_for_quantile` is called once
+        per *(day, tau)* pair — see
+        :func:`bess_arb.bid.scenarios.solve_curves` — so the two counters are
+        in different units and merging them would silently misreport one of
+        them as the other.
+        """
+        return {
+            "forecast_calls": self._quantile_days["forecast"],
+            "fallback_calls": self._quantile_days["fallback"],
         }

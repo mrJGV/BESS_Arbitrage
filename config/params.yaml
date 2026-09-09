@@ -139,6 +139,14 @@ forecast:
   # only exists after 1 October 2025.
   min_deviation_days: 30
 
+  # v2.5, the bid-curve extension: the forecast policy's quantile belief is
+  # the point forecast shifted by the tau-quantile of its own causal forecast
+  # errors, bucketed by local time of day. This is the trust threshold on that residual
+  # sample, the same role min_train_days plays for the level stage: below it
+  # the quantile forecast declines, same as the point forecast does below
+  # min_train_days.
+  min_residual_obs: 30
+
   # Boosting rounds are a *ceiling*, not the number fitted. Each fit holds out
   # the most recent `validation_days` of its own trainable rows and stops when
   # the validation loss has not improved for `early_stopping_rounds`. Measured

@@ -205,6 +205,7 @@ def test_the_deviation_stage_exists_only_when_the_grid_is_finer() -> None:
         refit_days=30,
         min_train_days=200,
         min_deviation_days=30,
+        min_residual_obs=30,
         level_params={"num_leaves": 4},
         deviation_params={"num_leaves": 4},
         level_rounds=5,
@@ -231,6 +232,7 @@ def test_a_level_grid_finer_than_the_target_is_refused() -> None:
         refit_days=30,
         min_train_days=200,
         min_deviation_days=30,
+        min_residual_obs=30,
         level_params={},
         deviation_params={},
         level_rounds=5,
@@ -265,6 +267,7 @@ def _early_stopping_spec(ceiling: int, validation_days: int) -> ForecastSpec:
         refit_days=30,
         min_train_days=200,
         min_deviation_days=30,
+        min_residual_obs=30,
         level_params={"learning_rate": 0.1, "num_leaves": 8, "min_data_in_leaf": 20},
         deviation_params={
             "learning_rate": 0.1,

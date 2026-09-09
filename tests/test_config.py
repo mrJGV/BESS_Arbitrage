@@ -61,6 +61,7 @@ forecast:
   refit_days: 30
   min_train_days: 365
   min_deviation_days: 30
+  min_residual_obs: 30
   level_rounds: 600
   deviation_rounds: 400
   validation_days: 60
