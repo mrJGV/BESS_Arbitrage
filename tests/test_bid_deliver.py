@@ -16,9 +16,7 @@ from bess_arb.backtest.metrics import settle_profit
 from bess_arb.bid.deliver import deliver
 from bess_arb.model.spec import BatteryParams
 
-PARAMS = BatteryParams(
-    p_max_mw=10.0, e_max_mwh=20.0, eta_rt=0.85, c_deg_eur_mwh=17.0
-)
+PARAMS = BatteryParams(p_max_mw=10.0, e_max_mwh=20.0, eta_rt=0.85, c_deg_eur_mwh=17.0)
 
 
 def _cleared(prices: np.ndarray) -> np.ndarray:

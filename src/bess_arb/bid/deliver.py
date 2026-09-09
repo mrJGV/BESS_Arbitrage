@@ -107,8 +107,7 @@ def deliver(
         raise ValueError(f"dt_h must be positive, got {dt_h}")
     if not -1e-9 <= soc_initial_mwh <= params.e_max_mwh + 1e-9:
         raise ValueError(
-            f"soc_initial_mwh {soc_initial_mwh} lies outside [0, "
-            f"{params.e_max_mwh}]"
+            f"soc_initial_mwh {soc_initial_mwh} lies outside [0, {params.e_max_mwh}]"
         )
 
     n = int(net_mw.shape[0])

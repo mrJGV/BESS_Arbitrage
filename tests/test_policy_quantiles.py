@@ -54,8 +54,9 @@ def _family(policy: QuantilePolicy, day: dt.date) -> np.ndarray:
 
 
 def test_the_floor_satisfies_the_quantile_protocol() -> None:
-    assert isinstance(FloorPolicy(_prices(dt.date(2024, 1, 1), dt.date(2024, 3, 31))),
-                      QuantilePolicy)
+    assert isinstance(
+        FloorPolicy(_prices(dt.date(2024, 1, 1), dt.date(2024, 3, 31))), QuantilePolicy
+    )
 
 
 def test_the_floor_family_is_monotone_in_tau() -> None:

@@ -118,9 +118,7 @@ def test_a_single_level_gives_a_one_step_curve() -> None:
 
 def test_quantile_levels_must_ascend() -> None:
     with pytest.raises(ValueError, match="must ascend"):
-        solve_curves(
-            _Recording(), _Widening(), DAY, WINDOW, quantile_levels=(0.9, 0.1)
-        )
+        solve_curves(_Recording(), _Widening(), DAY, WINDOW, quantile_levels=(0.9, 0.1))
 
 
 def test_quantile_levels_must_not_be_empty() -> None:

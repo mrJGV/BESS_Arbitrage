@@ -232,9 +232,7 @@ def run_backtest(
     so both modes must return the same profit for it to the last cent.
     """
     if bidding not in ("schedule", "curve"):
-        raise ValueError(
-            f"bidding must be 'schedule' or 'curve', got {bidding!r}"
-        )
+        raise ValueError(f"bidding must be 'schedule' or 'curve', got {bidding!r}")
 
     # Narrowed once, here, rather than re-tested per day: the loop then
     # branches on the narrowed value, which is both cheaper and the form the

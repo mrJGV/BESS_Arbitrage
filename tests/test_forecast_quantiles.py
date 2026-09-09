@@ -112,9 +112,7 @@ def test_a_warmed_forecaster_answers_and_the_family_is_monotone() -> None:
     _warm(forecaster, day, 40)
 
     window = _window(day)
-    family = np.array(
-        [forecaster.forecast_quantile(day, window, t) for t in TAUS]
-    )
+    family = np.array([forecaster.forecast_quantile(day, window, t) for t in TAUS])
 
     assert not np.isnan(family).any()
     assert np.all(np.diff(family, axis=0) >= -1e-9)

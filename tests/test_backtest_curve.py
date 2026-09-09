@@ -41,7 +41,8 @@ def _prices(first: str, last: str) -> pd.Series:
     hour = np.asarray(index.tz_convert(MARKET_TZ).hour, dtype=float)
     rng = np.random.default_rng(20260908)
     return pd.Series(
-        60.0 + 40.0 * np.sin((hour - 5.0) * np.pi / 12.0)
+        60.0
+        + 40.0 * np.sin((hour - 5.0) * np.pi / 12.0)
         + rng.normal(0.0, 15.0, len(index)),
         index=index,
         name="price_eur_mwh",
@@ -60,13 +61,21 @@ def test_the_oracle_settles_identically_under_both_modes() -> None:
 
     schedule = summarise(
         run_backtest(
-            prices, OraclePolicy(prices), BATTERY, HOURLY, PROTOCOL,
+            prices,
+            OraclePolicy(prices),
+            BATTERY,
+            HOURLY,
+            PROTOCOL,
             bidding="schedule",
         )
     )
     curve = summarise(
         run_backtest(
-            prices, OraclePolicy(prices), BATTERY, HOURLY, PROTOCOL,
+            prices,
+            OraclePolicy(prices),
+            BATTERY,
+            HOURLY,
+            PROTOCOL,
             bidding="curve",
         )
     )
@@ -118,7 +127,11 @@ def test_a_schedule_run_reports_no_clip_and_one_step() -> None:
 
     metrics = summarise(
         run_backtest(
-            prices, FloorPolicy(prices), BATTERY, HOURLY, PROTOCOL,
+            prices,
+            FloorPolicy(prices),
+            BATTERY,
+            HOURLY,
+            PROTOCOL,
             bidding="schedule",
         )
     )
@@ -151,7 +164,11 @@ def test_a_policy_without_quantiles_cannot_bid_curves() -> None:
 
     with pytest.raises(TypeError, match="cannot bid curves"):
         run_backtest(
-            prices, _PointOnly(), BATTERY, HOURLY, PROTOCOL,
+            prices,
+            _PointOnly(),
+            BATTERY,
+            HOURLY,
+            PROTOCOL,
             bidding="curve",
         )
 
@@ -161,6 +178,10 @@ def test_an_unknown_bidding_mode_is_refused() -> None:
 
     with pytest.raises(ValueError, match="must be 'schedule' or 'curve'"):
         run_backtest(
-            prices, OraclePolicy(prices), BATTERY, HOURLY, PROTOCOL,
+            prices,
+            OraclePolicy(prices),
+            BATTERY,
+            HOURLY,
+            PROTOCOL,
             bidding="limit_order",
         )
