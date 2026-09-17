@@ -192,6 +192,33 @@ forecast:
     bagging_freq: 1
     lambda_l2: 1.0
 
+# --- Bidding, v3 -----------------------------------------------------------
+# The joint scenario source. The quantile sweep asks each period for its own
+# marginal at a common level, so its scenarios move every period together:
+# that family assumes cross-period price surprises are perfectly correlated. A
+# joint sample assumes nothing: each scenario is one past decision's whole
+# error trajectory added to today's belief, so whatever dependence the errors
+# have is what the sample has.
+bid:
+  # Scenarios per window. Five, the same count as the quantile sweep, so a
+  # comparison between the two differs only in where the price vectors came
+  # from and not in how many there are. It also sizes the optimised curve's
+  # MILP, whose integer count grows linearly with it.
+  n_scenarios: 5
+
+  # Past decisions the pool needs before the policy will answer with a
+  # distribution at all. The same role min_train_days plays for the point
+  # model: below it the policy declines and the day is bid as a fixed
+  # schedule, which is counted and reported. Not a lookback length — the pool
+  # expands and never forgets, for the reason the floor's average does.
+  min_scenario_days: 30
+
+  # Subtract the pool's per-period mean, so the scenario set's expectation is
+  # exactly the policy's own point belief and v3 differs from v2 in dispersion
+  # alone. Turning this off hands the policy a free causal bias correction,
+  # which would make a v3-vs-v2 comparison a statement about two things at once.
+  centre_residuals: true
+
 # --- Modelling stack -------------------------------------------------------
 backend: pyomo              # pyomo | poi (the port, when it exists)
 

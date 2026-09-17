@@ -76,14 +76,22 @@ class ForecastPolicy:
         self._fallback = fallback
         self._days = {"forecast": 0, "fallback": 0}
         self._quantile_days = {"forecast": 0, "fallback": 0}
+        self._scenario_days = {"forecast": 0, "fallback": 0}
 
     def prices_for(self, day: dt.date, window: pd.DatetimeIndex) -> FloatArray:
         """What the policy believes the window will cost, decided at the gate."""
         believed = self._forecaster.forecast(day, window)
         if believed is None:
             self._days["fallback"] += 1
+            # The floor records its own vector into the shared pool, which is
+            # right: on this day that vector is what this policy bid, so the
+            # error it later shows is this policy's error.
             return self._fallback.prices_for(day, window)
         self._days["forecast"] += 1
+        # v3's residual pool, recorded at the one place a belief is formed.
+        # `record` keeps the first entry per day, so the fallback branch above
+        # and this one cannot both claim a day.
+        self._fallback.scenario_pool().record(day, window, believed)
         return believed
 
     def prices_for_quantile(
@@ -108,6 +116,55 @@ class ForecastPolicy:
             return self._fallback.prices_for_quantile(day, window, tau)
         self._quantile_days["forecast"] += 1
         return believed
+
+    def price_scenarios(
+        self, day: dt.date, window: pd.DatetimeIndex, n_scenarios: int
+    ) -> FloatArray | None:
+        """v3's joint scenario source: this policy's belief plus its own errors.
+
+        Delegates the residual pool to the injected :class:`FloorPolicy`'s
+        :class:`~bess_arb.scenarios.BeliefResiduals`, but records **this
+        policy's** belief into it, which is what makes the pool the forecast
+        policy's error distribution rather than the floor's.
+
+        Three things follow from the pool holding whole *windows*, and each was
+        a decision that would otherwise need its own code:
+
+        - **The two horizon days are paired.** One recorded belief spans D and
+          D+1 from a single decision, so a sampled residual carries the
+          observed dependence across the horizon boundary. Lead 1 is genuinely
+          harder than lead 0 — at the gate the D+1 exogenous bundle covering
+          D+1 has not been published — and drawing the two halves
+          independently would fabricate an independence the data does not
+          show.
+        - **Fallback days are in the pool.** On a day the forecaster declined,
+          the belief recorded is the floor's, so the residual is the floor's
+          error. That is correct rather than a leak: the object is *this
+          policy's* causal error, and on that day this policy bid the floor's
+          vector. In the headline quarter-hourly regime it never arises; in
+          the hourly regime it covers the first year, and
+          :meth:`diagnostics` already says how much.
+        - **The scenario mean is the point forecast.** The pool is centred, so
+          v3 differs from v2 in dispersion alone and cannot quietly collect a
+          causal bias correction the point forecaster deliberately does not
+          make.
+        """
+        believed = self.prices_for(day, window)
+        pool = self._fallback.scenario_pool()
+        residuals = pool.sample(day, window, n_scenarios)
+        if residuals is None:
+            self._scenario_days["fallback"] += 1
+            return None
+        self._scenario_days["forecast"] += 1
+        return believed[None, :] + residuals
+
+    def scenario_diagnostics(self) -> dict[str, int]:
+        """v3's ladder counts: days bid as a distribution, days bid as v2."""
+        return {
+            "scenario_forecast_days": self._scenario_days["forecast"],
+            "scenario_fallback_days": self._scenario_days["fallback"],
+            **self._fallback.scenario_pool().diagnostics(),
+        }
 
     def diagnostics(self) -> dict[str, int]:
         """Days served by the model and by the floor, plus the model's own.

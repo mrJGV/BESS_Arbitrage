@@ -53,6 +53,7 @@ import numpy as np
 import pandas as pd
 
 from bess_arb.model.spec import FloatArray
+from bess_arb.scenarios import BeliefResiduals, ScenarioConfig
 from bess_arb.timeline import MARKET_TZ, gate_close_utc
 
 __all__ = ["FloorPolicy"]
@@ -69,6 +70,7 @@ class FloorPolicy:
         *,
         min_observations: int = 1,
         min_quantile_observations: int = 10,
+        scenarios: ScenarioConfig | None = None,
     ) -> None:
         if min_observations < 1:
             raise ValueError(
@@ -116,6 +118,17 @@ class FloorPolicy:
             "grand_mean": 0,
             "no_history": 0,
         }
+        # v3. The floor's joint scenarios are drawn from *its own* causal
+        # errors, not the forecaster's: a scenario family is a statement about
+        # what a particular policy does not know, and the floor's ignorance is
+        # a different shape from the model's. Built here rather than injected
+        # so that a floor constructed anywhere gets the capability, and so the
+        # two policies' scenario machinery stays the identical object — the
+        # same reasoning §2.5 gives for injecting one climatology rather than
+        # writing a second.
+        self._scenarios = BeliefResiduals(
+            prices, scenarios if scenarios is not None else ScenarioConfig()
+        )
 
     def prices_for(self, day: dt.date, window: pd.DatetimeIndex) -> FloatArray:
         """The climatological price of each period in ``window``.
@@ -132,6 +145,10 @@ class FloorPolicy:
             out[position] = self._climatological(
                 int(month_time_keys[position]), int(time_keys[position]), cutoff
             )
+        # Recorded here, at the one place a belief is formed, so that v3's
+        # residual pool cannot drift out of step with what was actually bid.
+        # Idempotent per day, so the degradation sweep does not triple it.
+        self._scenarios.record(day, window, out)
         return out
 
     def prices_for_quantile(
@@ -157,6 +174,39 @@ class FloorPolicy:
                 int(month_time_keys[position]), int(time_keys[position]), cutoff, tau
             )
         return out
+
+    def price_scenarios(
+        self, day: dt.date, window: pd.DatetimeIndex, n_scenarios: int
+    ) -> FloatArray | None:
+        """v3's joint scenario source: the climatology plus its own past errors.
+
+        ``None`` when fewer than ``min_scenario_days`` past decisions have both
+        been made and cleared, which is the opening stretch of any run. The
+        caller falls back to the fixed schedule rather than to the comonotone
+        tau-sweep: mixing two scenario constructions inside one run would make
+        the result a statement about neither.
+        """
+        believed = self.prices_for(day, window)
+        residuals = self._scenarios.sample(day, window, n_scenarios)
+        if residuals is None:
+            return None
+        return believed[None, :] + residuals
+
+    def scenario_pool(self) -> BeliefResiduals:
+        """This floor's residual pool, shared with the policy that injects it.
+
+        :class:`~bess_arb.policy.forecast.ForecastPolicy` records *its own*
+        belief here rather than building a second pool, for the same reason it
+        injects this climatology rather than writing a second one: the
+        instance is private to that policy, so there is nothing to
+        cross-contaminate, and one object means the two cannot drift apart on
+        what counts as causal.
+        """
+        return self._scenarios
+
+    def scenario_diagnostics(self) -> dict[str, int]:
+        """v3's ladder counts, reported with any joint run."""
+        return self._scenarios.diagnostics()
 
     @staticmethod
     def _keys_for(window: pd.DatetimeIndex) -> tuple[np.ndarray, np.ndarray]:

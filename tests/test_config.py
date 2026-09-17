@@ -71,6 +71,10 @@ forecast:
     num_leaves: 63
   deviation:
     num_leaves: 31
+bid:
+  n_scenarios: 5
+  min_scenario_days: 30
+  centre_residuals: true
 backend: pyomo
 solver:
   name: highs

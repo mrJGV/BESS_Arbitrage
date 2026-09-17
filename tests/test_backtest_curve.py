@@ -176,7 +176,7 @@ def test_a_policy_without_quantiles_cannot_bid_curves() -> None:
 def test_an_unknown_bidding_mode_is_refused() -> None:
     prices = _prices("2024-01-01", "2024-01-12")
 
-    with pytest.raises(ValueError, match="must be 'schedule' or 'curve'"):
+    with pytest.raises(ValueError, match="'schedule', 'curve', 'joint' or 'optimised'"):
         run_backtest(
             prices,
             OraclePolicy(prices),

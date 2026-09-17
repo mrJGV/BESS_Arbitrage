@@ -26,6 +26,7 @@ from bess_arb.model.spec import FloatArray
 from bess_arb.policy.floor import FloorPolicy
 from bess_arb.policy.forecast import Forecaster, ForecastPolicy
 from bess_arb.policy.oracle import OraclePolicy
+from bess_arb.scenarios import ScenarioConfig
 
 __all__ = [
     "POLICY_NAMES",
@@ -35,6 +36,8 @@ __all__ = [
     "OraclePolicy",
     "PricePolicy",
     "QuantilePolicy",
+    "ScenarioConfig",
+    "ScenarioPolicy",
     "build_policy",
 ]
 
@@ -75,6 +78,36 @@ class QuantilePolicy(Protocol):
     ) -> FloatArray: ...
 
 
+@runtime_checkable
+class ScenarioPolicy(Protocol):
+    """v3's capability: a *joint* sample of price trajectories for the window.
+
+    Declared as a third Protocol rather than folded into
+    :class:`QuantilePolicy`, because the two are different objects and the
+    difference is the whole of v3. A quantile family is K *marginal* beliefs
+    swept together: every period sits at the same level at once, so the family
+    assumes cross-period surprises move in lockstep. That is not the object a
+    battery needs: its decision depends on the *ordering* of prices within the
+    window, which is a property of the joint law and of no set of marginals.
+
+    A scenario matrix is ``(S, n_periods)``: row *s* is one whole trajectory,
+    internally coherent, carrying whatever dependence the errors actually have.
+    Nothing about it is ordered — row 2 is not "dearer" than row 1 — which is
+    exactly why it must not reach
+    :func:`bess_arb.bid.scenarios.solve_curves`, whose monotone-in-tau guard
+    would reject a perfectly good sample. It goes to
+    :func:`bess_arb.bid.scenarios.solve_scenarios` instead.
+
+    ``None`` is a legitimate answer: it means the policy has no distribution
+    yet, not that it failed. The backtest then bids the fixed schedule, which
+    is what v1 and v2 bid every day.
+    """
+
+    def price_scenarios(
+        self, day: dt.date, window: pd.DatetimeIndex, n_scenarios: int
+    ) -> FloatArray | None: ...
+
+
 POLICY_NAMES: tuple[str, ...] = ("floor", "forecast", "oracle")
 """Registered policies, in the order they read as a ladder.
 
@@ -90,6 +123,7 @@ def build_policy(
     prices: pd.Series,
     *,
     forecaster: Forecaster | None = None,
+    scenarios: ScenarioConfig | None = None,
 ) -> PricePolicy:
     """Construct a policy by the name the CLI and the config use.
 
@@ -101,11 +135,16 @@ def build_policy(
     others. It is not built here because it is expensive and regime-specific,
     and because one instance must be shared across a degradation sweep — see
     :func:`bess_arb.forecast.build_forecaster`.
+
+    ``scenarios`` configures v3's joint sampling and is ignored by the oracle,
+    whose predictive law is a point mass. It is passed rather than read from a
+    global so that a scenario-count sweep is three calls to this function, not
+    three configs.
     """
     if name == "oracle":
         return OraclePolicy(prices)
     if name == "floor":
-        return FloorPolicy(prices)
+        return FloorPolicy(prices, scenarios=scenarios)
     if name == "forecast":
         if forecaster is None:
             raise ValueError(
@@ -114,6 +153,6 @@ def build_policy(
                 "in. It is deliberately not built here: it is regime-specific "
                 "and must be shared across a c_deg sweep."
             )
-        return ForecastPolicy(forecaster, FloorPolicy(prices))
+        return ForecastPolicy(forecaster, FloorPolicy(prices, scenarios=scenarios))
     known = ", ".join(POLICY_NAMES)
     raise ValueError(f"unknown policy {name!r}; known policies: {known}")

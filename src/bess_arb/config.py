@@ -17,6 +17,7 @@ from typing import Any
 import yaml
 
 from bess_arb.model.spec import BatteryParams, SolverConfig
+from bess_arb.scenarios import ScenarioConfig
 from bess_arb.timeline import Regime
 
 __all__ = [
@@ -238,6 +239,7 @@ class Config:
     horizon: HorizonConfig
     bound: BoundConfig
     forecast: ForecastConfig
+    bid: ScenarioConfig
     backend: str
     solver: SolverConfig
     seed: int
@@ -262,6 +264,7 @@ class Config:
             horizon=self.horizon,
             bound=self.bound,
             forecast=self.forecast,
+            bid=self.bid,
             backend=self.backend,
             solver=self.solver,
             seed=self.seed,
@@ -310,6 +313,7 @@ def load_config(path: Path | None = None) -> Config:
             "horizon",
             "bound",
             "forecast",
+            "bid",
             "backend",
             "solver",
             "seed",
@@ -378,10 +382,39 @@ def load_config(path: Path | None = None) -> Config:
         horizon=_load_horizon(_section(raw, "horizon")),
         bound=_load_bound(_section(raw, "bound")),
         forecast=_load_forecast(_section(raw, "forecast")),
+        bid=_load_bid(_section(raw, "bid"), seed),
         backend=backend,
         solver=solver,
         seed=seed,
     )
+
+
+def _load_bid(section: Mapping[str, Any], seed: int) -> ScenarioConfig:
+    """v3's joint scenario settings.
+
+    ``seed`` comes from the root rather than from this section: invariant 8
+    wants one seed for the run, and a second one here would be a way for a
+    scenario draw to be re-rolled without the rest of the run noticing.
+    """
+    _reject_unknown(
+        section,
+        {"n_scenarios", "min_scenario_days", "centre_residuals"},
+        "bid",
+    )
+    centre = section.get("centre_residuals", True)
+    if not isinstance(centre, bool):
+        raise ConfigError("bid.centre_residuals must be true or false")
+    try:
+        return ScenarioConfig(
+            n_scenarios=int(section["n_scenarios"]),
+            min_scenario_days=int(section["min_scenario_days"]),
+            centre_residuals=centre,
+            seed=seed,
+        )
+    except KeyError as error:
+        raise ConfigError(f"bid is missing {error.args[0]!r}") from None
+    except ValueError as error:
+        raise ConfigError(f"bid: {error}") from None
 
 
 def _load_horizon(section: Mapping[str, Any]) -> HorizonConfig:

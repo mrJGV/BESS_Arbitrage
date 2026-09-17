@@ -14,9 +14,15 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from bess_arb.model.spec import BatteryParams, FloatArray, Solution, SolverConfig
+from bess_arb.model.spec import (
+    BatteryParams,
+    CurveSolution,
+    FloatArray,
+    Solution,
+    SolverConfig,
+)
 
-__all__ = ["BatteryMILP", "SolveError"]
+__all__ = ["BatteryMILP", "BidCurveMILP", "SolveError"]
 
 
 class SolveError(RuntimeError):
@@ -60,5 +66,63 @@ class BatteryMILP(Protocol):
 
         ``prices`` is €/MWh over ``n_periods`` periods and may be negative;
         ``soc_initial`` is MWh at the start of the first period.
+        """
+        ...
+
+
+@runtime_checkable
+class BidCurveMILP(Protocol):
+    """v3 stage 2: what a bid-curve optimiser implements.
+
+    Declared beside :class:`BatteryMILP` rather than as a widening of it,
+    because the two answer different questions. :meth:`BatteryMILP.solve`
+    returns a *dispatch* for one price vector. This returns a *curve* — a
+    first-stage decision taken before prices are known, with the dispatch as
+    per-scenario recourse. Handing both back through one Protocol would make
+    the return type ambiguous exactly where the distinction matters.
+
+    The invariant 2 boundary, stated here because this is where it is easiest
+    to cross by accident
+    -------------------------------------------------------------------------
+
+    CLAUDE.md invariant 2 says every **policy** obtains its schedule from the
+    same :class:`BatteryMILP`, differing only in the price vector. That is
+    what makes "the policy captured 84% of the bound" a statement about
+    information rather than about two programs. It is unchanged: the floor,
+    the forecast policy and the oracle all still go through the single window
+    model, and the ladder that produces the chart is untouched.
+
+    **This is not a policy and must never become a rung of that ladder.** It
+    is a bidding object: it is scored as a bidding result against the same
+    oracle bound, and it is reported separately. The scope of the exemption is
+    exactly that sentence — a second formulation is permitted for the bidding
+    question and for nothing else. A backend that used it to serve a policy
+    would satisfy this Protocol and defeat its purpose, in the same way
+    ``docs/DECISIONS.md`` §6.3 describes for a backend that rebuilds inside
+    :meth:`solve`.
+
+    The physical model is not duplicated by it: the balance, exclusivity,
+    big-M and objective are the same relations, written once per scenario.
+    What is genuinely new is the curve variable and the constraint linking a
+    scenario's dispatch to the band its price cleared in.
+    """
+
+    def __init__(
+        self,
+        params: BatteryParams,
+        n_periods: int,
+        n_scenarios: int,
+        dt_h: float,
+        *,
+        solver: SolverConfig | None = None,
+    ) -> None: ...
+
+    def solve(self, scenario_prices: FloatArray, soc_initial: float) -> CurveSolution:
+        """Choose the curve maximising expected profit over ``scenario_prices``.
+
+        ``scenario_prices`` is ``(n_scenarios, n_periods)`` in €/MWh and may
+        be negative; ``soc_initial`` is MWh at the start of the first period
+        and is shared by every scenario, because the battery has one state and
+        the uncertainty is about prices rather than about where it started.
         """
         ...
