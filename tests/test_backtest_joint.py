@@ -15,14 +15,16 @@ is not a measurement.
 
 from __future__ import annotations
 
+import datetime as dt
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from bess_arb.backtest.metrics import summarise
-from bess_arb.backtest.runner import run_backtest
+from bess_arb.backtest.runner import BacktestResult, run_backtest
 from bess_arb.config import HorizonConfig
-from bess_arb.model import BatteryParams
+from bess_arb.model import BatteryParams, FloatArray
 from bess_arb.policy.floor import FloorPolicy
 from bess_arb.policy.oracle import OraclePolicy
 from bess_arb.scenarios import ScenarioConfig
@@ -51,7 +53,9 @@ def _prices(first: str, last: str) -> pd.Series:
     )
 
 
-def _run(policy: object, prices: pd.Series, bidding: str, **kwargs: object):
+def _run(
+    policy: object, prices: pd.Series, bidding: str, **kwargs: object
+) -> BacktestResult:
     return run_backtest(
         prices,
         policy,  # type: ignore[arg-type]
@@ -89,7 +93,7 @@ def test_a_policy_without_scenarios_is_refused_by_name() -> None:
     class _PointOnly:
         name = "point_only"
 
-        def prices_for(self, day, window):
+        def prices_for(self, day: dt.date, window: pd.DatetimeIndex) -> FloatArray:
             return np.zeros(len(window))
 
     with pytest.raises(TypeError, match="price_scenarios"):
@@ -231,7 +235,7 @@ def test_the_optimised_mode_needs_the_same_scenario_capability() -> None:
     class _PointOnly:
         name = "point_only"
 
-        def prices_for(self, day, window):
+        def prices_for(self, day: dt.date, window: pd.DatetimeIndex) -> FloatArray:
             return np.zeros(len(window))
 
     with pytest.raises(TypeError, match="price_scenarios"):

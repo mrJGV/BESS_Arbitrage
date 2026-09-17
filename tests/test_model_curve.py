@@ -26,7 +26,12 @@ import numpy as np
 import pytest
 
 from bess_arb.bid.curve import BidCurves
-from bess_arb.model import get_backend, get_curve_backend
+from bess_arb.model import (
+    BatteryMILP,
+    BidCurveMILP,
+    get_backend,
+    get_curve_backend,
+)
 from bess_arb.model.spec import BatteryParams, SolverConfig
 
 GOLDEN = BatteryParams(p_max_mw=10.0, e_max_mwh=20.0, eta_rt=0.85, c_deg_eur_mwh=0.0)
@@ -34,13 +39,17 @@ REAL = BatteryParams(p_max_mw=10.0, e_max_mwh=20.0, eta_rt=0.85, c_deg_eur_mwh=1
 SOLVER = SolverConfig(name="highs", mip_gap=0.0, threads=1, time_limit_s=300.0)
 
 
-def _curve_model(params: BatteryParams, n_periods: int, n_scenarios: int, dt_h=1.0):
+def _curve_model(
+    params: BatteryParams, n_periods: int, n_scenarios: int, dt_h: float = 1.0
+) -> BidCurveMILP:
     return get_curve_backend("pyomo")(
         params, n_periods, n_scenarios, dt_h, solver=SOLVER
     )
 
 
-def _window_model(params: BatteryParams, n_periods: int, dt_h=1.0):
+def _window_model(
+    params: BatteryParams, n_periods: int, dt_h: float = 1.0
+) -> BatteryMILP:
     return get_backend("pyomo")(params, n_periods, dt_h, solver=SOLVER)
 
 
