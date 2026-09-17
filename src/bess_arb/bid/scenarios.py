@@ -34,7 +34,7 @@ from bess_arb.bid.curve import BidCurves, build_curves
 from bess_arb.model.spec import FloatArray, Solution
 from bess_arb.policy import QuantilePolicy
 
-__all__ = ["QUANTILE_LEVELS", "ScenarioSolves", "solve_curves"]
+__all__ = ["QUANTILE_LEVELS", "ScenarioSolves", "solve_curves", "solve_scenarios"]
 
 QUANTILE_LEVELS: tuple[float, ...] = (0.1, 0.3, 0.5, 0.7, 0.9)
 """Equally spaced, the median included, the tails excluded — deliberately.
@@ -65,8 +65,21 @@ class ScenarioSolves:
     level failed to solve, and at what believed value.
     """
 
-    quantile_levels: tuple[float, ...]
     solutions: tuple[Solution, ...]
+    source: str = "quantile"
+    """Which construction produced the family — ``"quantile"`` or ``"joint"``.
+
+    Recorded rather than inferred, because the two are not comparable numbers
+    and a reader looking at a run's diagnostics must be able to see which one
+    produced it. Same reasoning as ``BacktestResult.bidding``.
+    """
+    quantile_levels: tuple[float, ...] | None = None
+    """The tau levels swept, or ``None`` for a joint sample, which has none.
+
+    A joint scenario carries no level: it is one draw from the predictive
+    law, not the belief at a stated probability. Leaving this ``None`` rather
+    than filling it with indices is the type saying so.
+    """
 
 
 def solve_curves(
@@ -110,9 +123,66 @@ def solve_curves(
     _check_monotone_in_tau(scenario_prices, quantile_levels)
     curves = build_curves(scenario_prices, p_c_mw, p_d_mw)
     scenario_solves = ScenarioSolves(
-        quantile_levels=tuple(quantile_levels), solutions=tuple(solutions)
+        solutions=tuple(solutions),
+        source="quantile",
+        quantile_levels=tuple(quantile_levels),
     )
     return curves, scenario_solves
+
+
+def solve_scenarios(
+    solve: Callable[[FloatArray], Solution],
+    scenario_prices: FloatArray,
+) -> tuple[BidCurves, ScenarioSolves]:
+    """Assemble one window's bid curves from a **joint** scenario sample.
+
+    v3's entry point, and deliberately a sibling of :func:`solve_curves`
+    rather than a widening of it. The two differ in one place — what the S
+    price vectors mean — and that difference is the whole of v3, so it is
+    expressed as two functions rather than as a flag.
+
+    ``scenario_prices`` is ``(S, n_periods)``: row *s* is one whole trajectory
+    drawn from the policy's predictive law, internally coherent, carrying
+    whatever cross-period dependence the errors actually have. It arrives
+    already built (see :class:`~bess_arb.scenarios.BeliefResiduals`) rather
+    than being pulled out of a policy one level at a time, because there is no
+    ladder to walk: a sample has no ordering to iterate in.
+
+    **No monotone-in-tau check, and its absence is the point.** That guard
+    exists because a quantile family *claims* to be ordered in tau and
+    :func:`~bess_arb.bid.curve.build_curves` would silently reinterpret one
+    that is not. A sample makes no such claim — row 2 is not dearer than row 1,
+    and a period where it is cheaper is the sample doing its job. Running the
+    guard here would reject every correct input. What replaces it is the shape
+    and finiteness check below: the failure this path can actually have is a
+    malformed matrix, not a mis-ordered one.
+    """
+    scenario_prices = np.asarray(scenario_prices, dtype=np.float64)
+    if scenario_prices.ndim != 2 or scenario_prices.shape[0] < 1:
+        raise ValueError(
+            "scenario_prices must be (n_scenarios, n_periods) with at least "
+            f"one scenario, got shape {scenario_prices.shape}"
+        )
+    if not np.isfinite(scenario_prices).all():
+        raise ValueError(
+            "scenario_prices carries a non-finite value; a residual drawn from "
+            "a window with an unpriced period would do this, and adding it to "
+            "a belief gives the optimiser a NaN coefficient rather than an error"
+        )
+
+    n_levels, n_periods = scenario_prices.shape
+    p_c_mw = np.empty((n_levels, n_periods), dtype=np.float64)
+    p_d_mw = np.empty((n_levels, n_periods), dtype=np.float64)
+    solutions: list[Solution] = []
+
+    for i in range(n_levels):
+        solution = solve(scenario_prices[i])
+        p_c_mw[i] = solution.p_c_mw
+        p_d_mw[i] = solution.p_d_mw
+        solutions.append(solution)
+
+    curves = build_curves(scenario_prices, p_c_mw, p_d_mw)
+    return curves, ScenarioSolves(solutions=tuple(solutions), source="joint")
 
 
 def _check_monotone_in_tau(

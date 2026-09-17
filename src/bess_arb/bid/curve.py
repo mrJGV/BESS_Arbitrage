@@ -142,8 +142,18 @@ def build_curves(
     """Assemble one curve per period from ``K`` scenario solves.
 
     All three arrays are ``(n_scenarios, n_periods)``: the price vector each
-    scenario was solved on, and the charge and discharge it produced. The
-    scenarios are the quantile levels, in ascending order.
+    scenario was solved on, and the charge and discharge it produced.
+
+    **The rows need not arrive in any order, and both callers rely on that.**
+    Each period's K pairs are sorted by price here before they are paired with
+    quantities, so a comonotone tau-ladder (v2.5) and an unordered joint sample
+    (v3) build the same object from the same code. The consequence is worth
+    stating because it is also a trap: a family that *claims* to be ordered in
+    tau and is not will be silently reinterpreted rather than rejected, which
+    is why :func:`bess_arb.bid.scenarios.solve_curves` checks that claim before
+    calling this, and why
+    :func:`bess_arb.bid.scenarios.solve_scenarios` deliberately does not — a
+    sample makes no such claim to violate.
     """
     if not (scenario_prices.shape == p_c_mw.shape == p_d_mw.shape):
         raise ValueError(

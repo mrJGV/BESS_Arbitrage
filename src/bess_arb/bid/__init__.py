@@ -17,7 +17,12 @@ from __future__ import annotations
 
 from bess_arb.bid.curve import BidCurves, build_curves
 from bess_arb.bid.deliver import Delivered, deliver
-from bess_arb.bid.scenarios import QUANTILE_LEVELS, ScenarioSolves, solve_curves
+from bess_arb.bid.scenarios import (
+    QUANTILE_LEVELS,
+    ScenarioSolves,
+    solve_curves,
+    solve_scenarios,
+)
 
 __all__ = [
     "QUANTILE_LEVELS",
@@ -27,4 +32,5 @@ __all__ = [
     "build_curves",
     "deliver",
     "solve_curves",
+    "solve_scenarios",
 ]
