@@ -21,6 +21,7 @@ FloatArray = NDArray[np.float64]
 
 __all__ = [
     "BatteryParams",
+    "CurveSolution",
     "FloatArray",
     "Solution",
     "SolveStatus",
@@ -201,3 +202,60 @@ class Solution:
         if not e_max_mwh > 0.0:
             raise ValueError(f"e_max_mwh must be positive, got {e_max_mwh}")
         return self.discharged_mwh / e_max_mwh
+
+
+@dataclass(frozen=True, slots=True)
+class CurveSolution:
+    """A bid curve chosen by optimisation rather than by construction.
+
+    v3 stage 2's return type. It is deliberately *not* a
+    :class:`Solution`: that object is one window's dispatch, and this one is
+    a first-stage decision that has no single dispatch attached to it -- the
+    dispatch is the recourse, and there is one per scenario. Returning a
+    Solution here would invite exactly the confusion the type exists to
+    prevent, namely reading the optimiser's expected objective as though it
+    were a settled profit (``docs/DECISIONS.md`` section 4.1: a policy is
+    scored on what its schedule earned at realised prices, never on the
+    objective it was shown).
+
+    ``band_prices`` is ``(n_periods, n_bands)`` ascending and ``quantities``
+    the same shape, non-decreasing along axis 1 -- the two arrays
+    :class:`bess_arb.bid.curve.BidCurves` is built from, so the optimised
+    curve clears through the identical code path as a constructed one.
+    """
+
+    status: SolveStatus
+    objective: float
+    """Expected profit over the scenario set, at the *believed* prices.
+
+    Not a profit. The scenarios are a belief; what the curve earns is what it
+    earns once cleared against the prices that actually settled.
+    """
+
+    band_prices: FloatArray
+    quantities: FloatArray
+    dt_h: float
+    objective_bound: float | None = None
+    solver_name: str | None = None
+    solver_version: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.band_prices.shape != self.quantities.shape:
+            raise ValueError(
+                f"band_prices {self.band_prices.shape} and quantities "
+                f"{self.quantities.shape} must have the same shape"
+            )
+        if self.band_prices.ndim != 2:
+            raise ValueError(
+                f"expected (n_periods, n_bands), got {self.band_prices.shape}"
+            )
+        if not self.dt_h > 0.0:
+            raise ValueError(f"dt_h must be positive, got {self.dt_h}")
+
+    @property
+    def n_periods(self) -> int:
+        return int(self.band_prices.shape[0])
+
+    @property
+    def n_bands(self) -> int:
+        return int(self.band_prices.shape[1])
