@@ -50,16 +50,24 @@ import numpy as np
 import pandas as pd
 
 from bess_arb.backtest.metrics import settle_profit
-from bess_arb.bid import QUANTILE_LEVELS, deliver, solve_curves
+from bess_arb.bid import (
+    QUANTILE_LEVELS,
+    BidCurves,
+    ScenarioSolves,
+    deliver,
+    solve_curves,
+    solve_scenarios,
+)
 from bess_arb.config import HorizonConfig
-from bess_arb.model import BatteryMILP, get_backend
+from bess_arb.model import BatteryMILP, BidCurveMILP, get_backend, get_curve_backend
 from bess_arb.model.spec import (
     BatteryParams,
     FloatArray,
+    Solution,
     SolverConfig,
     SolveStatus,
 )
-from bess_arb.policy import PricePolicy, QuantilePolicy
+from bess_arb.policy import PricePolicy, QuantilePolicy, ScenarioPolicy
 from bess_arb.series import delivery_days
 from bess_arb.timeline import Regime, periods_in_day, utc_index
 
@@ -119,8 +127,25 @@ class BacktestResult:
     solver_name: str | None = None
     solver_version: str | None = None
     bidding: str = "schedule"
-    """Which settlement the run used — recorded, because the two are not
+    """Which settlement the run used — recorded, because the three are not
     comparable numbers unless a reader can see which produced which."""
+
+    n_scenarios: int = 0
+    """Scenarios per window under ``bidding="joint"``, zero otherwise.
+
+    Recorded with the result because a joint run's curve resolution is capped
+    by it: a curve cannot carry more distinct steps than the sample has
+    trajectories, so ``curve_steps`` must always be read against this.
+    """
+
+    schedule_fallback_days: int = 0
+    """Days a ``"joint"`` run bid the fixed schedule for want of a distribution.
+
+    The residual pool fills only as decisions are made *and clear*, so the
+    opening stretch of every joint run is bid as v2. This is how much of the
+    result is not actually v3, and it is reported rather than described — the
+    same discipline §2.5 applies to the floor's own fallbacks.
+    """
 
     @property
     def evaluated(self) -> tuple[DayResult, ...]:
@@ -191,6 +216,55 @@ class _ModelPool:
         return tuple(sorted(self._models))
 
 
+class _CurveModelPool:
+    """One :class:`BidCurveMILP` per ``(window length, scenario count)``.
+
+    The same build-once discipline as :class:`_ModelPool`, and the same reason
+    for pooling on window length: a two-day window is 47, 48 or 49 periods and
+    one model cannot serve all three. The scenario count joins the key because
+    it sizes the first stage as well as the recourse; in practice it is
+    constant across a run, so the pool still reaches three entries and stops.
+
+    Built lazily, so a run that never bids an optimised curve never imports
+    the optimiser -- which keeps the extra Pyomo construction cost off every
+    v1 and v2 run.
+    """
+
+    def __init__(
+        self,
+        backend_name: str,
+        params: BatteryParams,
+        dt_h: float,
+        solver: SolverConfig | None,
+    ) -> None:
+        self._backend_name = backend_name
+        self._params = params
+        self._dt_h = dt_h
+        self._solver = solver
+        self._backend: type[BidCurveMILP] | None = None
+        self._models: dict[tuple[int, int], BidCurveMILP] = {}
+
+    def get(self, n_periods: int, n_scenarios: int) -> BidCurveMILP:
+        key = (n_periods, n_scenarios)
+        model = self._models.get(key)
+        if model is None:
+            if self._backend is None:
+                self._backend = get_curve_backend(self._backend_name)
+            model = self._backend(
+                self._params,
+                n_periods,
+                n_scenarios,
+                self._dt_h,
+                solver=self._solver,
+            )
+            self._models[key] = model
+        return model
+
+    @property
+    def keys(self) -> tuple[tuple[int, int], ...]:
+        return tuple(sorted(self._models))
+
+
 def run_backtest(
     prices: pd.Series,
     policy: PricePolicy,
@@ -205,6 +279,7 @@ def run_backtest(
     on_day: Callable[[int, int, DayResult], None] | None = None,
     bidding: str = "schedule",
     quantile_levels: tuple[float, ...] = QUANTILE_LEVELS,
+    n_scenarios: int = 5,
 ) -> BacktestResult:
     """Walk the delivery days, implementing one at a time.
 
@@ -225,19 +300,38 @@ def run_backtest(
         per period, cleared at the prices that actually settled, then clipped
         to what the state of charge can deliver. The policy must implement
         :class:`~bess_arb.policy.QuantilePolicy`.
+    ``"joint"``
+        v3. One solve per *scenario*, where the S scenarios are a joint
+        sample from the policy's own predictive law rather than a comonotone
+        sweep of marginals — see :class:`~bess_arb.scenarios.BeliefResiduals`.
+        The clearing, clipping and settlement path is byte-identical to
+        ``"curve"``; only where the price vectors came from is different,
+        which is what makes a ``"curve"`` versus ``"joint"`` comparison a
+        statement about the *dependence assumption* and nothing else. The
+        policy must implement :class:`~bess_arb.policy.ScenarioPolicy`.
 
-    Everything else is held identical between the two, which is what keeps
+        A day whose residual pool is still too thin falls back to
+        ``"schedule"`` for that day and is counted. Falling back to
+        ``"curve"`` instead would mix two scenario constructions inside one
+        run and make the result a statement about neither.
+
+    Everything else is held identical across the three, which is what keeps
     the comparison between them a statement about bidding rather than about
-    two different backtests. The oracle is the check: its curve is degenerate,
-    so both modes must return the same profit for it to the last cent.
+    three different backtests. The oracle is the check: its curve is
+    degenerate under both extensions, so all three modes must return the same
+    profit for it to the last cent.
     """
-    if bidding not in ("schedule", "curve"):
-        raise ValueError(f"bidding must be 'schedule' or 'curve', got {bidding!r}")
+    if bidding not in ("schedule", "curve", "joint", "optimised"):
+        raise ValueError(
+            "bidding must be 'schedule', 'curve', 'joint' or 'optimised', got "
+            f"{bidding!r}"
+        )
 
     # Narrowed once, here, rather than re-tested per day: the loop then
     # branches on the narrowed value, which is both cheaper and the form the
     # type checker can follow.
     curve_policy: QuantilePolicy | None = None
+    joint_policy: ScenarioPolicy | None = None
     if bidding == "curve":
         if not isinstance(policy, QuantilePolicy):
             raise TypeError(
@@ -246,14 +340,25 @@ def run_backtest(
                 "vectors per window, one per quantile level."
             )
         curve_policy = policy
+    elif bidding in ("joint", "optimised"):
+        if not isinstance(policy, ScenarioPolicy):
+            raise TypeError(
+                f"the {policy.name} policy cannot bid joint scenarios: it has "
+                "no price_scenarios method. Joint settlement needs S whole "
+                "price trajectories per window, drawn from the policy's own "
+                "predictive law."
+            )
+        joint_policy = policy
     days = _decision_days(prices, regime, protocol, first_day, last_day)
     pool = _ModelPool(backend, params, regime.dt_h, solver)
+    curve_pool = _CurveModelPool(backend, params, regime.dt_h, solver)
 
     soc = protocol.soc_initial_mwh(params.e_max_mwh)
     warmup_until = protocol.warmup_days
     records: list[DayResult] = []
     solver_name: str | None = None
     solver_version: str | None = None
+    joint_fallback = 0
 
     for position, day in enumerate(days):
         horizon_end = day + dt.timedelta(days=protocol.window_days - 1)
@@ -264,52 +369,93 @@ def run_backtest(
         model = pool.get(len(window))
         realised = _realised(prices, window[:n_implement], day)
 
-        if curve_policy is None:
-            believed = policy.prices_for(day, window)
-            if believed.shape != (len(window),):
-                raise ValueError(
-                    f"{policy.name} returned {believed.shape[0]} prices for a "
-                    f"{len(window)}-period window on {day}"
-                )
-            solution = model.solve(believed, soc)
-            p_c = solution.p_c_mw[:n_implement]
-            p_d = solution.p_d_mw[:n_implement]
-            soc_end = float(solution.soc_mwh[n_implement - 1])
-            believed_objective = solution.objective
-            status = solution.status
-            clipped_mwh = 0.0
-            curve_steps = 1.0
-        else:
-            # partial rather than a lambda: it binds this day's model and SoC
-            # at construction, so the callable cannot pick up the next
-            # iteration's values if it is ever held past the call.
+        # partial rather than a lambda: it binds this day's model and SoC at
+        # construction, so the callable cannot pick up the next iteration's
+        # values if it is ever held past the call.
+        solve_window = partial(model.solve, soc_initial=soc)
+
+        settle = partial(
+            _implement_curves,
+            prices=prices,
+            window=window,
+            day=day,
+            n_implement=n_implement,
+            soc=soc,
+            regime=regime,
+            params=params,
+        )
+
+        if curve_policy is not None:
             curves, solves = solve_curves(
-                partial(model.solve, soc_initial=soc),
+                solve_window,
                 curve_policy,
                 day,
                 window,
                 quantile_levels=_levels_for(policy, quantile_levels),
             )
-            # Clear and settle the implemented day only. The horizon's second
-            # day was solved to remove the end-of-horizon artefact and is
-            # discarded here exactly as it is under a fixed schedule.
-            net = curves.clear(_realised(prices, window, day))[:n_implement]
-            delivered = deliver(net, soc, regime.dt_h, params)
-            p_c = delivered.p_c_mw
-            p_d = delivered.p_d_mw
-            soc_end = float(delivered.soc_mwh[n_implement - 1])
-            # The median solve's objective, so the column keeps meaning "what
-            # the policy believed it was worth" rather than becoming a sum
-            # over scenarios that no single belief corresponds to.
-            middle = solves.solutions[len(solves.solutions) // 2]
-            believed_objective = middle.objective
-            status = middle.status
-            clipped_mwh = delivered.clipped_mwh
-            curve_steps = float(curves.step_counts[:n_implement].mean())
-            solution = middle
+            objective, status, name, version = _middle_of(solves)
+            outcome = settle(
+                curves,
+                believed_objective=objective,
+                status=status,
+                solver_name=name,
+                solver_version=version,
+            )
+        elif joint_policy is not None:
+            scenarios = joint_policy.price_scenarios(day, window, n_scenarios)
+            if scenarios is None:
+                # No distribution yet — bid the fixed schedule, which is what
+                # v1 and v2 bid every day, and count it. Falling back to the
+                # quantile sweep would put two scenario constructions inside
+                # one run.
+                joint_fallback += 1
+                outcome = _implement_schedule(
+                    policy, solve_window, day, window, n_implement
+                )
+            elif scenarios.shape[1] != len(window):
+                raise ValueError(
+                    f"{policy.name} returned scenarios over {scenarios.shape[1]} "
+                    f"periods for a {len(window)}-period window on {day}"
+                )
+            elif bidding == "joint":
+                curves, solves = solve_scenarios(solve_window, scenarios)
+                objective, status, name, version = _middle_of(solves)
+                outcome = settle(
+                    curves,
+                    believed_objective=objective,
+                    status=status,
+                    solver_name=name,
+                    solver_version=version,
+                )
+            else:
+                # v3 stage 2. One solve, and the curve comes back as a
+                # decision rather than as S dispatches stitched together.
+                chosen = curve_pool.get(len(window), scenarios.shape[0]).solve(
+                    scenarios, soc
+                )
+                curves = BidCurves(
+                    prices=chosen.band_prices, quantities=chosen.quantities
+                )
+                outcome = settle(
+                    curves,
+                    # The expected profit over the scenario set, which is what
+                    # this optimiser was shown. Settlement still recomputes
+                    # from the cleared dispatch — §4.1, and the distinction is
+                    # sharper here than anywhere else in the project, because
+                    # this objective is an expectation over beliefs and could
+                    # not be a profit even in principle.
+                    believed_objective=chosen.objective,
+                    status=chosen.status,
+                    solver_name=chosen.solver_name,
+                    solver_version=chosen.solver_version,
+                )
+        else:
+            outcome = _implement_schedule(
+                policy, solve_window, day, window, n_implement
+            )
 
-        solver_name = solution.solver_name
-        solver_version = solution.solver_version
+        solver_name = outcome.solver_name
+        solver_version = outcome.solver_version
 
         record = DayResult(
             day=day,
@@ -317,20 +463,22 @@ def run_backtest(
             periods=n_implement,
             window_periods=len(window),
             hours=n_implement * regime.dt_h,
-            status=status,
-            profit_eur=settle_profit(p_c, p_d, realised, regime.dt_h, params),
-            believed_objective_eur=believed_objective,
-            charged_mwh=float(p_c.sum()) * regime.dt_h,
-            discharged_mwh=float(p_d.sum()) * regime.dt_h,
+            status=outcome.status,
+            profit_eur=settle_profit(
+                outcome.p_c, outcome.p_d, realised, regime.dt_h, params
+            ),
+            believed_objective_eur=outcome.believed_objective,
+            charged_mwh=float(outcome.p_c.sum()) * regime.dt_h,
+            discharged_mwh=float(outcome.p_d.sum()) * regime.dt_h,
             soc_start_mwh=soc,
-            soc_end_mwh=soc_end,
-            clipped_mwh=clipped_mwh,
-            curve_steps=curve_steps,
+            soc_end_mwh=outcome.soc_end,
+            clipped_mwh=outcome.clipped_mwh,
+            curve_steps=outcome.curve_steps,
         )
         records.append(record)
         if on_day is not None:
             on_day(position, len(days), record)
-        soc = soc_end
+        soc = outcome.soc_end
 
     return BacktestResult(
         policy=policy.name,
@@ -342,7 +490,118 @@ def run_backtest(
         solver_name=solver_name,
         solver_version=solver_version,
         bidding=bidding,
+        n_scenarios=n_scenarios if bidding in ("joint", "optimised") else 0,
+        schedule_fallback_days=joint_fallback,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _Implemented:
+    """What one day's bidding path produced, before it becomes a record.
+
+    The three bidding modes differ only in how these fields are obtained, so
+    naming them makes the settlement below identical for all three rather than
+    duplicated three times — which is the property that keeps a mode-to-mode
+    comparison a statement about bidding.
+    """
+
+    p_c: FloatArray
+    p_d: FloatArray
+    soc_end: float
+    believed_objective: float
+    status: SolveStatus
+    clipped_mwh: float
+    curve_steps: float
+    solver_name: str | None
+    solver_version: str | None
+
+
+def _implement_schedule(
+    policy: PricePolicy,
+    solve_window: Callable[[FloatArray], Solution],
+    day: dt.date,
+    window: pd.DatetimeIndex,
+    n_implement: int,
+) -> _Implemented:
+    """v1 and v2: one solve on the policy's price vector, dispatched as-is."""
+    believed = policy.prices_for(day, window)
+    if believed.shape != (len(window),):
+        raise ValueError(
+            f"{policy.name} returned {believed.shape[0]} prices for a "
+            f"{len(window)}-period window on {day}"
+        )
+    solution = solve_window(believed)
+    return _Implemented(
+        p_c=solution.p_c_mw[:n_implement],
+        p_d=solution.p_d_mw[:n_implement],
+        soc_end=float(solution.soc_mwh[n_implement - 1]),
+        believed_objective=solution.objective,
+        status=solution.status,
+        # A schedule comes out of the optimiser already feasible, so there is
+        # nothing to clip, and a one-step curve is what a fixed schedule is.
+        clipped_mwh=0.0,
+        curve_steps=1.0,
+        solver_name=solution.solver_name,
+        solver_version=solution.solver_version,
+    )
+
+
+def _implement_curves(
+    curves: BidCurves,
+    prices: pd.Series,
+    window: pd.DatetimeIndex,
+    day: dt.date,
+    n_implement: int,
+    soc: float,
+    regime: Regime,
+    params: BatteryParams,
+    *,
+    believed_objective: float,
+    status: SolveStatus,
+    solver_name: str | None,
+    solver_version: str | None,
+) -> _Implemented:
+    """Clear the curves at realised prices, then repair for SoC.
+
+    Shared by all three curve modes deliberately -- v2.5's comonotone sweep,
+    v3's joint sample, and v3 stage 2's optimised curve. They differ in how
+    the curve was arrived at and in nothing after that, so this function is
+    where "only the construction changed" stops being a claim and becomes a
+    fact about the code. It is also why the residual clipping of the optimised
+    curve is comparable with the constructed ones: the same repair, applied to
+    a curve that was chosen so as not to need it.
+    """
+    # Clear and settle the implemented day only. The horizon's second day was
+    # solved to remove the end-of-horizon artefact and is discarded here
+    # exactly as it is under a fixed schedule.
+    net = curves.clear(_realised(prices, window, day))[:n_implement]
+    delivered = deliver(net, soc, regime.dt_h, params)
+    return _Implemented(
+        p_c=delivered.p_c_mw,
+        p_d=delivered.p_d_mw,
+        soc_end=float(delivered.soc_mwh[n_implement - 1]),
+        believed_objective=believed_objective,
+        status=status,
+        clipped_mwh=delivered.clipped_mwh,
+        curve_steps=float(curves.step_counts[:n_implement].mean()),
+        solver_name=solver_name,
+        solver_version=solver_version,
+    )
+
+
+def _middle_of(
+    solves: ScenarioSolves,
+) -> tuple[float, SolveStatus, str | None, str | None]:
+    """The representative scenario solve, for the columns a run reports.
+
+    The middle solve's objective, so ``believed_objective`` keeps meaning
+    "what the policy believed it was worth" rather than becoming a sum over
+    scenarios that no single belief corresponds to. Under a quantile sweep
+    that is the median scenario; under a joint sample it is an arbitrary
+    draw, which is honest -- a sample has no median trajectory to point at.
+    """
+    middle = solves.solutions[len(solves.solutions) // 2]
+    return middle.objective, middle.status, middle.solver_name, middle.solver_version
 
 
 def _levels_for(
