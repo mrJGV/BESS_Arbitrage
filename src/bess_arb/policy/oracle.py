@@ -70,3 +70,27 @@ class OraclePolicy:
         if not 0.0 < tau < 1.0:
             raise ValueError(f"tau must lie strictly between 0 and 1, got {tau}")
         return self.prices_for(day, window)
+
+    def price_scenarios(
+        self, day: dt.date, window: pd.DatetimeIndex, n_scenarios: int
+    ) -> FloatArray:
+        """One scenario: the realised prices, whatever ``n_scenarios`` asks for.
+
+        v3's joint scenario source, degenerate for the same reason
+        :meth:`prices_for_quantile` is. A joint distribution describes what a
+        policy does not know, and this one knows everything; its predictive
+        law is a point mass, so a sample of any size holds one distinct
+        trajectory. Returning a single row rather than ``n_scenarios`` copies
+        is not an optimisation of a special case — it is the statement that
+        the special case *is* a point mass, and it keeps the oracle's curve a
+        single step under v3 exactly as under v2.5.
+
+        That makes the oracle the regression test for both extensions: under
+        ``bidding="curve"`` and ``bidding="joint"`` alike, clearing this curve
+        at realised prices must reproduce the fixed-schedule oracle to the
+        cent. If it ever stops doing so, the clearing path is wrong, not the
+        model.
+        """
+        if n_scenarios < 1:
+            raise ValueError(f"n_scenarios must be at least 1, got {n_scenarios}")
+        return self.prices_for(day, window)[None, :]
