@@ -16,17 +16,30 @@ every other policy, and the cheap-periods behaviour falls out.
 Three choices worth stating
 ---------------------------
 
-**The average is causal.** For delivery day D it uses only prices stamped
-before noon (market local) on D-1, which is CLAUDE.md invariant 1 applied
-without an exception. The literal reading of the invariant is on *timestamps*,
-so this discards the afternoon and evening of D-1 even though those prices
-were published the day before and are genuinely known at the gate. That costs
-half a day out of a multi-year average and is worth paying: the alternative is
-a floor that needs a carve-out in the no-lookahead test slice 4 installs, and
-a test with a carve-out in it guards less than it appears to.
+**The average is causal, on publication time.** For delivery day D it uses
+only prices that had been *published* by noon (market local) on D-1, which is
+CLAUDE.md invariant 1 read the way every other series in this project reads
+it. A day-ahead price is public from about 13:00 on the day before delivery
+(:func:`bess_arb.timeline.price_published_utc`), so the floor deciding D reads
+every price through the end of D-1 and nothing from D. That is exactly the
+history the forecaster's training filter admits, so the two policies differ in
+what they do with the history and not in which history they were shown.
 
-The cost of being causal is that the average is thin in the first weeks of the
-backtest and converges over the first year. That is a real weakness, and it
+An earlier version cut on the period's own timestamp instead, discarding the
+afternoon and evening of D-1 although they had been public for a day. That was
+conservative rather than required, and it made the floor and the forecaster
+read different histories.
+
+**The series it averages is the caller's choice, and it matters.** The CLI
+hands the floor the same multi-regime history the forecaster reads. Built from
+the quarter-hourly file alone, the "November, 20:00" bucket would hold only
+the Novembers since October 2025 — a month-to-date average of the current
+month, which is a different and stronger null than the multi-year
+climatology ``docs/DECISIONS.md`` §2.5 describes. The difference between the
+two is measured and reported beside the headline rather than argued about.
+
+The cost of being causal is that the average is thin in the first weeks of a
+history and converges over the first year. That is a real weakness, and it
 runs in the *unflattering* direction for honesty — a weak floor makes the
 forecast policy look better — so it is measured rather than argued about:
 :meth:`FloorPolicy.diagnostics` counts how often each fallback fired.
@@ -54,7 +67,7 @@ import pandas as pd
 
 from bess_arb.model.spec import FloatArray
 from bess_arb.scenarios import BeliefResiduals, ScenarioConfig
-from bess_arb.timeline import MARKET_TZ, gate_close_utc
+from bess_arb.timeline import MARKET_TZ, gate_close_utc, price_published_index
 
 __all__ = ["FloorPolicy"]
 
@@ -93,7 +106,7 @@ class FloorPolicy:
 
         local = index.tz_convert(MARKET_TZ)
         values = np.asarray(prices.to_numpy(dtype=np.float64))
-        stamps = _nanoseconds(index)
+        stamps = _published_nanoseconds(index)
 
         month = np.asarray(local.month, dtype=np.int64)
         hour = np.asarray(local.hour, dtype=np.int64)
@@ -318,18 +331,23 @@ class FloorPolicy:
         return dict(self._quantile_fallbacks)
 
 
-def _nanoseconds(index: pd.DatetimeIndex) -> np.ndarray:
-    """Integer nanoseconds since the epoch, whatever resolution came in.
+def _published_nanoseconds(index: pd.DatetimeIndex) -> np.ndarray:
+    """Each price's publication instant as integer nanoseconds since the epoch.
 
-    ``DatetimeIndex.asi8`` returns the raw integers *in the index's own unit*,
-    and a Parquet round trip hands back microsecond resolution while
-    ``Timestamp.value`` is always nanoseconds. Comparing the two directly is
-    wrong by a factor of a thousand, which puts every gate a thousand times
-    too early — so the whole series appears to predate the cut and the floor
-    silently reads the future. Both sides are pinned to nanoseconds here and
+    Publication, not the period's own timestamp: the whole of a delivery day
+    is public from about 13:00 the day before, so that is the instant a
+    causal cutoff compares against. On a sorted index the result is
+    non-decreasing, which the prefix-sum lookup below relies on.
+
+    Pinned to nanoseconds. ``DatetimeIndex.asi8`` returns the raw integers
+    *in the index's own unit*, and a Parquet round trip hands back microsecond
+    resolution while ``Timestamp.value`` is always nanoseconds. Comparing the
+    two directly is wrong by a factor of a thousand, which puts every gate a
+    thousand times too early — so the whole series appears to predate the cut
+    and the floor silently reads the future. Both sides are pinned here and
     at the one place a cutoff is built.
     """
-    return np.asarray(index.as_unit("ns").asi8, dtype=np.int64)
+    return np.asarray(price_published_index(index).as_unit("ns").asi8, dtype=np.int64)
 
 
 class _PrefixSums:
@@ -378,18 +396,18 @@ def _prefix_sums(
 def _mean_before(
     table: dict[int, _PrefixSums], key: int, cutoff: int, minimum: int
 ) -> float | None:
-    """Mean of a key's observations strictly before ``cutoff``, or ``None``.
+    """Mean of a key's observations published at or before ``cutoff``, or ``None``.
 
-    ``side="left"`` is the load-bearing argument: an observation stamped
-    exactly at the gate instant is excluded. That is the invariant's own
-    wording — *no timestamp later than* noon on D-1 — read strictly at the
-    boundary, where a reading has to be chosen and the conservative one costs
-    nothing.
+    ``side="right"`` counts the stamps ``<= cutoff``, which is the invariant's
+    rule — admissible iff ``available_at <= gate`` — applied to publication
+    instants. The boundary case never arises on the real calendar, since
+    prices publish at 13:00 and the gate closes at noon, but the comparison is
+    written to the rule rather than to the coincidence.
     """
     entry = table.get(key)
     if entry is None:
         return None
-    count = int(np.searchsorted(entry.stamps, cutoff, side="left"))
+    count = int(np.searchsorted(entry.stamps, cutoff, side="right"))
     if count < minimum:
         return None
     return float(entry.cumsum[count - 1] / count)
@@ -398,18 +416,17 @@ def _mean_before(
 def _quantile_before(
     table: dict[int, _PrefixSums], key: int, cutoff: int, minimum: int, tau: float
 ) -> float | None:
-    """The tau-quantile of a key's observations strictly before ``cutoff``.
+    """The tau-quantile of a key's observations published at or before ``cutoff``.
 
-    Same cutoff convention as :func:`_mean_before` — ``side="left"`` excludes
-    an observation stamped exactly at the gate. The prefix ``values[:count]``
-    is unsorted by value (it is sorted by time, which is what the cutoff
-    needs); :func:`numpy.quantile` sorts it internally, which is fine at these
-    bucket sizes and would not be at a full-series scale.
+    Same cutoff convention as :func:`_mean_before`. The prefix
+    ``values[:count]`` is unsorted by value (it is sorted by time, which is
+    what the cutoff needs); :func:`numpy.quantile` sorts it internally, which
+    is fine at these bucket sizes and would not be at a full-series scale.
     """
     entry = table.get(key)
     if entry is None:
         return None
-    count = int(np.searchsorted(entry.stamps, cutoff, side="left"))
+    count = int(np.searchsorted(entry.stamps, cutoff, side="right"))
     if count < minimum:
         return None
     return float(np.quantile(entry.values[:count], tau))

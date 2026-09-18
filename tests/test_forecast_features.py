@@ -1,10 +1,10 @@
 """What the feature table actually contains, beyond being causal.
 
 ``tests/test_no_lookahead.py`` proves nothing arrives too early. This one
-proves the values are the right values: that ``price_lag2d`` really is the
-price two delivery days back at the same local clock time, that the
-pre-gate mean stops at noon, and that the DST days do not quietly become
-24-hour days on the way through a pivot.
+proves the values are the right values: that ``price_lag1d`` really is the
+price one delivery day back at the same local clock time, that a lag is
+stamped at its day's publication rather than its delivery, and that the DST
+days do not quietly become 24-hour days on the way through a pivot.
 
 The distinction matters because a table that is causal and *wrong* would pass
 the whole of the other file — a column of NaN is impeccably causal.
@@ -26,13 +26,14 @@ from bess_arb.timeline import (
     day_bounds,
     gate_close_utc,
     periods_in_day,
+    price_published_utc,
     to_market_time,
     utc_index,
 )
 
 HOURLY = Regime("hourly", 1.0)
 QUARTER_HOURLY = Regime("quarter_hourly", 0.25)
-LAGS = (2, 3, 4, 5, 6, 7, 8)
+LAGS = (1, 2, 3, 4, 5, 6, 7, 8)
 
 FIRST_DAY = dt.date(2025, 1, 1)
 LAST_DAY = dt.date(2026, 6, 30)
@@ -105,25 +106,24 @@ def test_a_lag_is_that_many_days_back_at_the_same_clock_time(
     assert actual == pytest.approx(here - (lag + lead) * 1000.0)
 
 
-def test_the_pregate_mean_stops_at_noon(regime: Regime) -> None:
-    """``price_pregate_mean`` reads D-1 up to the gate and not one period past.
+@pytest.mark.parametrize("lead", [0, 1])
+def test_a_lag_is_stamped_at_its_days_publication(regime: Regime, lead: int) -> None:
+    """``price_lag1d`` for a day-D target reads D-1, public since 13:00 on D-2.
 
-    Computed here from the raw series rather than from the table, so the two
-    routes to the same number have to agree.
+    Pinned as an instant rather than as "before the gate": the stamp is what
+    the no-lookahead audit compares, and a stamp at the *delivery* of D-1
+    would be after the gate and would wrongly flag yesterday as unknown.
     """
-    table = _table(regime)
-    day = dt.date(2026, 5, 20)
-    target = pd.Timestamp(f"{day} 18:00", tz=MARKET_TZ).tz_convert("UTC")
+    table = _table(regime, lead)
+    target = pd.Timestamp("2026-05-20 18:00", tz=MARKET_TZ).tz_convert("UTC")
+    decision_day = dt.date(2026, 5, 20) - dt.timedelta(days=lead)
 
-    prices = _prices(regime)
-    local = to_market_time(pd.DatetimeIndex(prices.index))
-    eve = day - dt.timedelta(days=1)
-    morning = (pd.Index(local.date) == eve) & (np.asarray(local.hour) < 12)
+    stamp = table.available_at.loc[target, "price_lag1d"]  # type: ignore[attr-defined]
 
-    assert table.values.loc[target, "price_pregate_mean"] == pytest.approx(  # type: ignore[attr-defined]
-        float(prices[morning].mean())
-    )
-    assert morning.sum() == pytest.approx(12.0 / regime.dt_h)
+    assert stamp == price_published_utc(decision_day - dt.timedelta(days=1))
+    assert stamp.tz_convert(MARKET_TZ).hour == 13
+    assert stamp.tz_convert(MARKET_TZ).date() == decision_day - dt.timedelta(days=2)
+    assert stamp <= gate_close_utc(decision_day)
 
 
 def test_the_exogenous_block_reads_the_hour_containing_the_period(

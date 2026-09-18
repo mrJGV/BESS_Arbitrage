@@ -118,10 +118,11 @@ bound:
 # the four arms that were measured before settling on this.
 forecast:
   # Delivery-day lags of the price, keyed on local time of day. They start at
-  # two because the gate is noon on D-1, so D-1 has not finished: D-2 is the
-  # most recent *complete* day. Asking for 1 here is refused in code — it is
-  # the classic lookahead bug in this project, not a tuning choice.
-  lags_days: [2, 3, 4, 5, 6, 7, 8]
+  # one because a delivery day's prices are published about 13:00 on the day
+  # before it, so at the noon gate for D the whole of D-1 has been public for
+  # a day. Asking for 0 here is refused in code — day D's own prices publish
+  # an hour after the gate, and that is the lookahead bug in this project.
+  lags_days: [1, 2, 3, 4, 5, 6, 7, 8]
 
   # Refit cadence in delivery days. Every fit is causal whatever this is; the
   # number buys wall clock at the price of staleness, and stating it means the
@@ -218,6 +219,24 @@ bid:
   # alone. Turning this off hands the policy a free causal bias correction,
   # which would make a v3-vs-v2 comparison a statement about two things at once.
   centre_residuals: true
+
+# --- Reporting -------------------------------------------------------------
+# The headline figure is a policy's share of the gap between the floor and the
+# bound. Its interval comes from a paired circular block bootstrap over
+# delivery days — see src/bess_arb/backtest/compare.py for why paired, why
+# blocks and why circular.
+report:
+  bootstrap:
+    # A week. Long enough to carry the state of charge handed from one day to
+    # the next and most of a weather spell; it also keeps each weekend inside
+    # a block. 319 quarter-hourly days make 46 blocks.
+    block_days: 7
+    resamples: 10000
+    confidence: 0.95
+    # The block length is a judgement, so the interval is also reported at two
+    # longer ones. A margin whose interval clears zero only at the shortest is
+    # not described as distinguishable from the floor.
+    sensitivity_block_days: [14, 28]
 
 # --- Modelling stack -------------------------------------------------------
 backend: pyomo              # pyomo | poi (the port, when it exists)

@@ -7,11 +7,11 @@ numbers: both produce a smooth daily shape and a plausible result. So the
 peek is tested for directly, by giving the policy a series whose future
 contradicts its past and asserting that the future has no effect.
 
-CLAUDE.md invariant 1 is written on *timestamps*, so the cut is at noon
-market-local on D-1 and prices stamped after that are unavailable even though
-they were published the previous day and are genuinely known. That strictness
-is deliberate — see the module docstring of ``policy/floor.py`` — and the
-boundary case is pinned here rather than left to be rediscovered.
+CLAUDE.md invariant 1 is read on *publication*: a delivery day's prices are
+public from about 13:00 on the day before delivery, so the floor deciding D
+reads the whole of D-1 — including its afternoon, which is after the gate on
+the period clock — and nothing from D. Both sides of that boundary are pinned
+here rather than left to be rediscovered.
 """
 
 from __future__ import annotations
@@ -24,7 +24,25 @@ import pytest
 
 from bess_arb.policy import build_policy
 from bess_arb.policy.floor import FloorPolicy
-from bess_arb.timeline import MARKET_TZ, Regime, gate_close_utc, utc_index
+from bess_arb.timeline import (
+    MARKET_TZ,
+    Regime,
+    gate_close_utc,
+    price_published_index,
+    utc_index,
+)
+
+
+def _published_after(prices: pd.Series, gate: pd.Timestamp) -> np.ndarray:
+    """Mask of the prices that were not yet public at ``gate``."""
+    return np.asarray(price_published_index(pd.DatetimeIndex(prices.index)) > gate)
+
+
+def _local(day: dt.date, hour: int) -> pd.Timestamp:
+    return pd.Timestamp(
+        dt.datetime.combine(day, dt.time(hour)), tz=MARKET_TZ
+    ).tz_convert("UTC")
+
 
 HOURLY = Regime("hourly", 1.0)
 QUARTER_HOURLY = Regime("quarter_hourly", 0.25)
@@ -78,19 +96,19 @@ def test_a_utc_keyed_climatology_would_fail_this() -> None:
     assert not np.allclose(believed, utc_keyed)
 
 
-def test_prices_after_the_gate_cannot_move_the_climatology() -> None:
+def test_prices_published_after_the_gate_cannot_move_the_climatology() -> None:
     """The lookahead test, done by contradiction.
 
-    Everything from the gate onward is replaced by a number nothing else in
-    the series comes near. If any of it leaked into the average the believed
-    prices would move, and they must not move at all.
+    Every price not yet public at the gate — day D onwards — is replaced by a
+    number nothing else in the series comes near. If any of it leaked into
+    the average the believed prices would move, and they must not move at all.
     """
     honest = _ramp("2022-01-01", "2022-03-31", HOURLY)
     day = dt.date(2022, 3, 20)
     cutoff = gate_close_utc(day)
 
     poisoned = honest.copy()
-    poisoned.loc[poisoned.index >= cutoff] = 10_000.0
+    poisoned.loc[_published_after(poisoned, cutoff)] = 10_000.0
 
     window = utc_index(day, day + dt.timedelta(days=1), HOURLY)
     from_honest = FloorPolicy(honest).prices_for(day, window)
@@ -100,24 +118,47 @@ def test_prices_after_the_gate_cannot_move_the_climatology() -> None:
     assert from_honest.max() < 100.0
 
 
-def test_the_price_stamped_exactly_at_the_gate_is_excluded() -> None:
-    """The boundary, pinned: 'no timestamp later than noon' cuts at noon.
-
-    One period at exactly the gate instant, made extreme. Including it would
-    move that hour's average by a visible amount, so the assertion is on a
-    number and not on a tolerance.
-    """
-    day = dt.date(2022, 3, 20)
-    cutoff = gate_close_utc(day)
-    flat = _series(
+def _flat_march() -> pd.Series:
+    return _series(
         "2022-03-01",
         "2022-03-31",
         HOURLY,
         np.zeros(len(utc_index("2022-03-01", "2022-03-31", HOURLY))),
     )
-    flat.loc[cutoff] = 1_000.0
 
-    window = utc_index(day, day + dt.timedelta(days=1), HOURLY)
+
+def test_the_evening_of_the_day_before_is_read() -> None:
+    """The boundary from below: 23:00 on D-1 is after the gate on the clock and
+    was published the day before, so it is in the average.
+
+    One extreme price at that hour on a flat series. The believed price for
+    23:00 must move by a visible amount, so the assertion is on a number and
+    not on a tolerance.
+    """
+    day = dt.date(2022, 3, 20)
+    flat = _flat_march()
+    flat.loc[_local(day - dt.timedelta(days=1), 23)] = 1_000.0
+
+    window = utc_index(day, day, HOURLY)
+    believed = FloorPolicy(flat).prices_for(day, window)
+
+    local_hour = np.asarray(window.tz_convert(MARKET_TZ).hour)
+    assert believed[local_hour == 23].min() > 10.0
+    assert believed[local_hour != 23] == pytest.approx(0.0)
+
+
+def test_the_first_period_of_the_decided_day_is_not() -> None:
+    """The boundary from above: 00:00 on D publishes an hour after the gate.
+
+    Its price is the one that must not move the average, and the two tests
+    together pin the cut to publication rather than to either end of the
+    period clock.
+    """
+    day = dt.date(2022, 3, 20)
+    flat = _flat_march()
+    flat.loc[_local(day, 0)] = 1_000.0
+
+    window = utc_index(day, day, HOURLY)
     believed = FloorPolicy(flat).prices_for(day, window)
 
     assert believed == pytest.approx(np.zeros(len(window)))
@@ -255,7 +296,7 @@ def test_the_gate_holds_whatever_resolution_the_index_carries(unit: str) -> None
     day = dt.date(2022, 3, 20)
 
     poisoned = honest.copy()
-    poisoned.loc[poisoned.index >= gate_close_utc(day)] = 10_000.0
+    poisoned.loc[_published_after(poisoned, gate_close_utc(day))] = 10_000.0
     poisoned.index = pd.DatetimeIndex(poisoned.index).as_unit(unit)
 
     window = utc_index(day, day + dt.timedelta(days=1), HOURLY).as_unit(unit)

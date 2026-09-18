@@ -29,10 +29,13 @@ Every document carries a generated index. After editing one, run
 
 # Invariants — never violate
 
-1. **No lookahead.** No variable used to decide on day D may carry a
-   timestamp later than 12:00 CET on D-1. Day D prices are NOT known at
-   decision time. Use published forecast series as exogenous inputs,
-   never realised values.
+1. **No lookahead.** No variable used to decide on day D may have been
+   *published* after 12:00 CET on D-1. The invariant is read on
+   publication time, for every series: the REE D+1 forecasts are on the
+   wire the morning before the gate, and a delivery day's prices are
+   published about 13:00 on the day before delivery, so at the gate for
+   D every price through D-1 is known and none of D's is. Use published
+   forecast series as exogenous inputs, never realised values.
 
 2. **One optimiser.** Every policy (floor, forecast, oracle) obtains its
    schedule from the same `BatteryMILP` instance via
@@ -140,5 +143,7 @@ Pyomo backend this means a persistent/APPSI interface, not a plain
 Conventional Commits with module scope (`feat(model):`, `test(model):`,
 `chore(data):`, ...). **A commit message says what changed, never why** —
 the reasoning belongs in the code and the documents, which already carry
-it. One branch per slice, PR into `main`, squash-merge with CI green. Tags `v0`/`v1`/`v2` mark the version ladder. The data
-snapshot gets its own commit so the freeze point is one hash.
+it. One branch per slice, PR into `main`, **merge commit** (never squash)
+with CI green. Tags `v0`/`v1`/`v2` mark the version ladder. The data
+snapshot gets its own commit so the freeze point is one hash; a squash would
+fold it into its slice.

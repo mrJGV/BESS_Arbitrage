@@ -7,6 +7,15 @@ number was knowable — that lives next door in
 :mod:`bess_arb.forecast.features` — and **which data a fit was allowed to
 see**, which lives here.
 
+A note on the measurements quoted below. They were taken before 18 September
+2026, when the information set was corrected in two respects: price lags now
+start at one day rather than two, because a delivery day's prices are public
+from the afternoon before it, and the floor the policy is compared against
+reads the same multi-regime history the forecaster does. The figures are kept
+as the record of the decisions they settled — the two-stage split, early
+stopping, the refit cadence, the shape stage not adopted — and are not the
+shipped forecaster's current numbers, which the README carries.
+
 Two stages, and why
 -------------------
 
@@ -99,6 +108,43 @@ stage's unfiltered training set; alongside the filter that stage requires, it
 is not. The higher number is not the one to reach for — the same reasoning
 that took the two-stage split at 91.1% over pooling at 90.7% on structural
 grounds rather than on the 0.4 points.
+
+Measured and not adopted: a within-day shape stage
+--------------------------------------------------
+
+Kept as a note so the experiment is not rerun from scratch. The level stage's
+lead-0 error splits about evenly between the day's level and its within-day
+shape (RMSE 12.10 against 12.69 €/MWh on the 319-day quarter-hourly run), but
+the money does not: at ``c_deg`` = 17 the optimiser reaches 90.6% of the
+rolling oracle given the realised daily level under the forecast's shape, and
+96.6% given the realised shape under the forecast's level, against 87.3%.
+
+Two arms tried to target the shape. *Shape*: a second booster on the same
+features and hyperparameters, its target the hour minus its delivery day's
+mean price and its time-of-day columns demeaned the same way, added to the
+level stage's daily mean. *Rescaled*: that profile multiplied per day so its
+within-day standard deviation equals the level stage's own. Percentages of the
+rolling oracle over the same 319 days:
+
+==========  ========  =========  =========  =========  ==============
+arm         c_deg 5   c_deg 17   c_deg 40   rank corr  within-day std
+==========  ========  =========  =========  =========  ==============
+level only    88.5%     87.3%      85.1%      0.927        34.9
+shape         89.0%     87.7%      83.2%      0.938        33.5
+rescaled      88.8%     87.2%      84.5%      0.935        34.9
+==========  ========  =========  =========  =========  ==============
+
+against a realised within-day standard deviation of 36.0. The shape booster
+orders the day better and swings it less, and the smaller swing drops marginal
+days where ``c_deg`` sets a high minimum spread. Restoring the swing recovers
+most of the loss at 40 and gives back the gains at 5 and 17. No arm is best at
+every point of the sweep, and at ``c_deg`` = 17 they are within half a point.
+
+One thing any rebuild must get right: a shape target needs its whole delivery
+day, so it settles at the day's end, not the hour's. At the gate for D the
+morning of D-1 has cleared and its afternoon has not, and a row settled at its
+own hour would train on the afternoon. The perturbation check in
+``tests/test_no_lookahead.py`` caught that leak when it was planted.
 """
 
 from __future__ import annotations
@@ -118,7 +164,7 @@ from bess_arb.forecast.features import (
     build_features,
 )
 from bess_arb.model.spec import FloatArray
-from bess_arb.timeline import MARKET_TZ, Regime, gate_close_utc
+from bess_arb.timeline import MARKET_TZ, Regime, gate_close_utc, price_published_index
 
 __all__ = ["ForecastSpec", "PriceForecaster", "Stage"]
 
@@ -282,6 +328,11 @@ class PriceForecaster:
         self._level_stage: dict[int, Stage] = {}
         self._deviation_stage: dict[int, Stage] = {}
         self._fitted_gate: pd.Timestamp | None = None
+        # The deviation stage may be fitted later than the level stage it
+        # accompanies (see `_fit`), so its own gate is tracked separately: the
+        # out-of-order guard has to know the latest gate *any* cached stage
+        # saw, not only the level stage's.
+        self._deviation_gate: pd.Timestamp | None = None
         self._predictions: dict[int, dict[pd.Timestamp, float]] = {0: {}, 1: {}}
         # Keyed rather than counted, because one forecaster serves a whole
         # degradation sweep: every day is forecast three times, identically,
@@ -456,17 +507,32 @@ class PriceForecaster:
     def _fit(self, gate: pd.Timestamp) -> bool:
         """Ensure a model exists that saw nothing after ``gate``.
 
-        A cached fit is reused only if it is recent enough *and* was cut at or
-        before this gate. The second condition is what makes an out-of-order
-        visit safe; see the module docstring.
+        A cached fit is reused only if it is recent enough *and* every cached
+        stage was cut at or before this gate. The second condition is what
+        makes an out-of-order visit safe; see the module docstring.
+
+        The deviation stage is retried daily while it is missing, the same
+        way the level stage's cold start is. It can only be fitted once
+        ``min_deviation_days`` of genuine intra-hour history precede the gate,
+        and if that threshold is crossed between two refits, waiting out the
+        refit interval would price up to ``refit_days`` more days without an
+        intra-hour stage for no saving worth having. The stretch that remains
+        is the data limit itself, and it is reported as ``level_only``.
         """
         current = self._fitted_gate
+        latest = max(
+            (g for g in (current, self._deviation_gate) if g is not None),
+            default=None,
+        )
         stale = (
             current is None
-            or gate < current
+            or latest is None
+            or gate < latest
             or (gate - current) >= pd.Timedelta(days=self._spec.refit_days)
         )
         if not stale:
+            if self._two_stage and not self._deviation_stage:
+                self._fit_deviation(gate)
             return bool(self._level_stage)
 
         level: dict[int, Stage] = {}
@@ -481,6 +547,7 @@ class PriceForecaster:
                 self._level_stage = {}
                 self._deviation_stage = {}
                 self._fitted_gate = None
+                self._deviation_gate = None
                 return False
             level[lead] = _fit_stage(
                 table,
@@ -492,26 +559,40 @@ class PriceForecaster:
                 self._spec.early_stopping_rounds,
             )
 
+        self._fits.extend(level.values())
+        self._level_stage = level
+        self._fitted_gate = gate
+        self._deviation_stage = {}
+        self._deviation_gate = None
+        self._fit_deviation(gate)
+        return True
+
+    def _fit_deviation(self, gate: pd.Timestamp) -> None:
+        """Fit the intra-hour stage at ``gate`` if enough history exists.
+
+        Leaves the stage empty otherwise, which :meth:`_predict` reports as
+        ``level_only`` and :meth:`_fit` retries on the next day. Both leads
+        are fitted together or not at all, so a window is never priced with
+        an intra-hour stage on one horizon day and none on the other.
+        """
         deviation: dict[int, Stage] = {}
         for lead, table in self._deviation.items():
             rows = table.trainable_before(gate)
-            if _spans_enough(table, rows, self._spec.min_deviation_days):
-                deviation[lead] = _fit_stage(
-                    table,
-                    rows,
-                    self._spec.booster_params(self._spec.deviation_params),
-                    self._spec.deviation_rounds,
-                    gate,
-                    self._spec.validation_days,
-                    self._spec.early_stopping_rounds,
-                )
-
-        self._fits.extend(level.values())
-        self._fits.extend(deviation.values())
-        self._level_stage = level
-        self._deviation_stage = deviation
-        self._fitted_gate = gate
-        return True
+            if not _spans_enough(table, rows, self._spec.min_deviation_days):
+                return
+            deviation[lead] = _fit_stage(
+                table,
+                rows,
+                self._spec.booster_params(self._spec.deviation_params),
+                self._spec.deviation_rounds,
+                gate,
+                self._spec.validation_days,
+                self._spec.early_stopping_rounds,
+            )
+        if deviation:
+            self._fits.extend(deviation.values())
+            self._deviation_stage = deviation
+            self._deviation_gate = gate
 
     def _predict(self, lead: int, window: pd.DatetimeIndex) -> FloatArray:
         """Level plus deviation for one horizon day's periods."""
@@ -541,15 +622,16 @@ class PriceForecaster:
     def _causal_residuals(
         self, lead: int, gate: pd.Timestamp
     ) -> tuple[pd.DatetimeIndex, FloatArray]:
-        """This lead's forecast errors for periods that have already cleared.
+        """This lead's forecast errors for periods whose price has been published.
 
         ``realised - forecast`` at every timestamp this lead has ever been
-        asked to predict, restricted to timestamps strictly before ``gate`` —
-        the same "settled by the gate" cutoff every causal quantity in this
-        project uses (see ``FloorPolicy._mean_before``). The forecasts
-        themselves need no separate check here: each one was already made
-        without seeing past its own gate, by :meth:`_predict`, so the only new
-        constraint is that *this* residual's target period has since cleared.
+        asked to predict, restricted to periods whose delivery day was
+        published at or before ``gate`` — the same publication-time cutoff
+        every causal quantity in this project uses (see
+        ``FloorPolicy._mean_before``). The forecasts themselves need no
+        separate check here: each one was already made without seeing past
+        its own gate, by :meth:`_predict`, so the only new constraint is that
+        *this* residual's target price has since been published.
         """
         made = self._predictions[lead]
         if not made:
@@ -560,7 +642,7 @@ class PriceForecaster:
         order = index.argsort()
         index, forecast_values = index[order], forecast_values[order]
 
-        before = index < gate
+        before = np.asarray(price_published_index(index) <= gate)
         index, forecast_values = index[before], forecast_values[before]
         if len(index) == 0:
             return index, np.empty(0, dtype=np.float64)
@@ -754,14 +836,12 @@ def _to_deviation(table: FeatureTable, level_regime: Regime) -> FeatureTable:
     becomes knowable later than it already was. It is also why the deviation
     table goes through the no-lookahead test like any other.
 
-    **``settled_at`` does move, and it has to.** A quarter's price settles when
-    its own period ends, but its *deviation* is not known until the hour it
-    belongs to is complete — it needs the other three quarters. So the
-    settlement instant becomes the hour's end. On this snapshot the distinction
-    happens to be inert, because the gate falls on a clock hour and hours are
-    aligned to it, so no quarter is ever admitted while its hour is still
-    running. Relying on that would be relying on a coincidence of two
-    unrelated conventions; a gate at half past would break it silently.
+    **``settled_at`` does not move.** A quarter's deviation needs the other
+    three quarters of its hour, and under a delivery-time reading that would
+    push its settlement to the hour's end. Under the publication reading the
+    whole delivery day publishes at once, so a quarter's deviation is knowable
+    at exactly the instant its price is, and the table's own ``settled_at``
+    carries across unchanged.
 
     **The target is withheld before the deviation exists at all.** Ahead of the
     market's move to 15-minute units, :func:`bess_arb.series.load_price_history`
@@ -802,9 +882,7 @@ def _to_deviation(table: FeatureTable, level_regime: Regime) -> FeatureTable:
         values=values,
         available_at=table.available_at,
         gate=table.gate,
-        settled_at=pd.Series(
-            hour + level_regime.step, index=table.values.index, name="settled_at"
-        ),
+        settled_at=table.settled_at,
         target=target.mask(_structurally_zero(target)),
         lead_days=table.lead_days,
         regime=table.regime,

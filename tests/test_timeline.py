@@ -23,6 +23,8 @@ from bess_arb.timeline import (
     gate_close_utc,
     hours_in_day,
     periods_in_day,
+    price_published_index,
+    price_published_utc,
     to_market_time,
     utc_index,
     validate_index,
@@ -85,6 +87,54 @@ def test_every_gate_in_a_year_precedes_its_day() -> None:
 
     for day in days:
         assert gate_close_utc(day) < day_index(day, QUARTER_HOURLY)[0]
+
+
+# --- when a price becomes known --------------------------------------------
+
+
+def test_prices_publish_at_one_market_local_on_the_day_before() -> None:
+    published = price_published_utc(dt.date(2024, 1, 15)).tz_convert(MARKET_TZ)
+
+    assert published.date() == dt.date(2024, 1, 14)
+    assert (published.hour, published.minute) == (13, 0)
+
+
+@pytest.mark.parametrize(
+    "day",
+    [
+        dt.date(2024, 1, 15),
+        dt.date(2024, 7, 15),
+        dt.date(2025, 10, 26),  # the 25-hour day
+        dt.date(2026, 3, 29),  # the 23-hour day
+        dt.date(2025, 10, 27),
+        dt.date(2026, 3, 30),
+    ],
+)
+def test_a_day_publishes_after_its_own_gate_and_before_the_next(day: dt.date) -> None:
+    """The two facts invariant 1 needs, across the transitions.
+
+    Day D's prices are not known at D's gate, and they are known at D+1's:
+    that is what makes a zero-day lag lookahead and a one-day lag not.
+    """
+    published = price_published_utc(day)
+
+    assert gate_close_utc(day) < published
+    assert published < gate_close_utc(day + dt.timedelta(days=1))
+    assert published < day_index(day, HOURLY)[0]
+
+
+def test_the_vectorised_publication_matches_the_scalar_one() -> None:
+    """Every period of a day maps to that day's one instant, DST days included."""
+    index = utc_index(dt.date(2025, 10, 24), dt.date(2025, 10, 28), QUARTER_HOURLY)
+
+    published = price_published_index(index)
+
+    assert len(published) == len(index)
+    assert published.is_monotonic_increasing
+    for instant, stamp in zip(index, published, strict=True):
+        assert stamp == price_published_utc(
+            delivery_day(pd.DatetimeIndex([instant]))[0]
+        )
 
 
 # --- days, instants, and the difference ----------------------------------
