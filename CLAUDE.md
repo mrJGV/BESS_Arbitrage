@@ -19,10 +19,10 @@ Published rationale: `docs/DECISIONS.md`. **It is frozen as of the v1
 close and is not updated as work proceeds** — what becomes public is
 decided once, at the repo freeze.
 
-The working record lives in `docs/private/`, which is gitignored.
-Decisions, design and measurements are recorded there as work proceeds.
-Do not add those files to the repo, do not name them, and do not
-describe their contents in tracked files or commit messages.
+The working record is kept outside the tracked tree. Decisions, design
+and measurements are recorded there as work proceeds. Do not add those
+files to the repo, do not name them, and do not describe their contents
+in tracked files or commit messages.
 
 Every document carries a generated index. After editing one, run
 `make toc`; `make check` fails if an index is stale.
