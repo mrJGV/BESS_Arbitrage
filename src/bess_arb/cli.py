@@ -16,7 +16,7 @@ import argparse
 import dataclasses
 import datetime as dt
 import json
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -25,8 +25,9 @@ from bess_arb import __version__
 if TYPE_CHECKING:  # pragma: no cover - typing only, no runtime import cost
     import pandas as pd
 
+    from bess_arb.backtest.compare import GapShare
     from bess_arb.backtest.metrics import Metrics
-    from bess_arb.backtest.runner import DayResult
+    from bess_arb.backtest.runner import BacktestResult, DayResult
     from bess_arb.config import Config
     from bess_arb.model.spec import SolverConfig
     from bess_arb.timeline import Regime
@@ -140,6 +141,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="degradation cost to run; repeatable, overrides --sweep",
     )
     run.add_argument(
+        "--charge-tariff",
+        type=float,
+        metavar="EUR_MWH",
+        help=(
+            "network tariff on charged energy, overriding "
+            "battery.charge_tariff_eur_mwh (docs/DECISIONS.md section 3.4)"
+        ),
+    )
+    run.add_argument(
         "--json", type=Path, metavar="PATH", help="also write the summary as JSON"
     )
 
@@ -166,6 +176,32 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-rolling",
         action="store_true",
         help="solve only the annual window, without the rolling oracle to compare",
+    )
+
+    figures = subcommands.add_parser(
+        "figures",
+        help="draw the headline chart from a run's JSON summary",
+        description=(
+            "Reads the file `run --sweep --json` wrote and solves nothing. The "
+            "chart needs all three policies at every c_deg in that file."
+        ),
+    )
+    figures.add_argument(
+        "--config", type=Path, metavar="PATH", help="config file (default: the repo's)"
+    )
+    figures.add_argument(
+        "--json",
+        type=Path,
+        default=Path("results/backtest_quarter_hourly.json"),
+        metavar="PATH",
+        help="run summary to draw from (default: %(default)s)",
+    )
+    figures.add_argument(
+        "--out",
+        type=Path,
+        default=Path("results/headline_quarter_hourly.png"),
+        metavar="PATH",
+        help="image to write; the format follows the suffix (default: %(default)s)",
     )
 
     return parser
@@ -323,30 +359,82 @@ def _progress(name: str) -> Callable[[int, int, DayResult], None]:
     return _report
 
 
-def _print_metrics(rows: Iterable[Metrics]) -> None:
+def _print_metrics(metrics: Mapping[str, Metrics], order: Iterable[str]) -> None:
     """One line per policy.
 
     ASCII only, and ``EUR`` rather than a currency symbol: this table is the
     project's main console output and Windows terminals default to cp1252,
     where anything else arrives as a replacement character.
 
-    Cycles per year is never omitted — ``docs/DECISIONS.md`` §3.3.
+    ``% of gap`` is the headline and comes first; it needs both references in
+    the run, and reads ``n/a`` otherwise. Cycles per year is never omitted —
+    ``docs/DECISIONS.md`` §3.3.
     """
+    from bess_arb.backtest.compare import gap_share
+
+    floor, oracle = metrics.get("floor"), metrics.get("oracle")
     header = (
-        f"  {'policy':<9} {'EUR/MW/year':>12} {'% of bound':>11} "
+        f"  {'policy':<9} {'EUR/MW/year':>12} {'% of gap':>9} {'% of bound':>11} "
         f"{'cycles/yr':>10} {'profit EUR':>14} {'days':>6}"
     )
     print(header)
     print("  " + "-" * (len(header) - 2))
-    for row in rows:
+    for name in order:
+        row = metrics[name]
         share = (
             "n/a" if row.fraction_of_bound is None else f"{row.fraction_of_bound:.1%}"
         )
-        print(
-            f"  {row.policy:<9} {row.profit_eur_per_mw_year:>12,.0f} {share:>11} "
-            f"{row.equivalent_cycles_per_year:>10.1f} {row.profit_eur:>14,.0f} "
-            f"{row.days:>6}"
+        closed = (
+            None
+            if floor is None or oracle is None
+            else gap_share(row.profit_eur, floor.profit_eur, oracle.profit_eur)
         )
+        gap = "n/a" if closed is None else f"{closed:.1%}"
+        print(
+            f"  {row.policy:<9} {row.profit_eur_per_mw_year:>12,.0f} {gap:>9} "
+            f"{share:>11} {row.equivalent_cycles_per_year:>10.1f} "
+            f"{row.profit_eur:>14,.0f} {row.days:>6}"
+        )
+
+
+def _print_comparison(comparison: GapShare) -> None:
+    """The headline share with its interval, under the table it summarises."""
+    if comparison.share is None:
+        print(
+            f"    {comparison.policy}: no gap between the floor and the bound "
+            "to close at this c_deg"
+        )
+        return
+    line = (
+        f"    {comparison.policy}: share of the floor-to-bound gap "
+        f"{comparison.share:.1%}"
+    )
+    if comparison.interval is not None and comparison.at_or_below_floor is not None:
+        low, high = comparison.interval
+        line += (
+            f", {comparison.confidence:.0%} interval {low:.1%} to {high:.1%}\n"
+            f"      ({comparison.block_days}-day blocks, "
+            f"{comparison.resamples:,} resamples); at or below the floor in "
+            f"{comparison.at_or_below_floor:.1%} of them"
+        )
+    else:
+        line += (
+            "\n      no interval: some resample had no gap between floor and "
+            "bound, so the run is too short to say"
+        )
+    print(line)
+
+
+def _print_sensitivity(comparison: GapShare) -> None:
+    """The same interval at a longer block, one line under the headline's."""
+    if comparison.interval is None or comparison.at_or_below_floor is None:
+        print(f"      {comparison.block_days}-day blocks: no interval")
+        return
+    low, high = comparison.interval
+    print(
+        f"      {comparison.block_days}-day blocks: {low:.1%} to {high:.1%}, "
+        f"at or below the floor in {comparison.at_or_below_floor:.1%}"
+    )
 
 
 def _policy_diagnostics(name: str, policy: object) -> dict[str, object]:
@@ -391,7 +479,9 @@ def _policy_diagnostics(name: str, policy: object) -> dict[str, object]:
     return {"diagnostics": counts}
 
 
-def _print_forecast_error(forecaster: object, prices: pd.Series) -> dict[str, object]:
+def _print_forecast_error(
+    forecaster: object, prices: pd.Series, evaluated: set[dt.date]
+) -> dict[str, object]:
     """The secondary error table.
 
     ``docs/DECISIONS.md`` §4.1: RMSE is reported and **is not the metric**. It
@@ -401,12 +491,15 @@ def _print_forecast_error(forecaster: object, prices: pd.Series) -> dict[str, ob
 
     Lead 0 only: that is the forecast that priced the day the backtest
     implemented. The second horizon day exists to keep the battery from
-    emptying itself at midnight, and it is never settled.
+    emptying itself at midnight, and it is never settled. And over the
+    ``evaluated`` days only, so the error table describes the same days the
+    economics do rather than also counting the warm-up.
     """
     import numpy as np
     import pandas as pd
 
     made = forecaster.predictions(0)  # type: ignore[attr-defined]
+    made = made[np.asarray(_delivery_day(made.index).isin(list(evaluated)))]
     actual = prices.reindex(made.index)
     both = made.notna() & actual.notna()
     made, actual = made[both], actual[both]
@@ -423,6 +516,7 @@ def _print_forecast_error(forecaster: object, prices: pd.Series) -> dict[str, ob
     )
     summary = {
         "periods": len(made),
+        "days": int(pd.Index(day).nunique()),
         "rmse_eur_mwh": round(float(np.sqrt(np.mean(error**2))), 3),
         "mae_eur_mwh": round(float(np.mean(np.abs(error))), 3),
         "bias_eur_mwh": round(float(np.mean(error)), 3),
@@ -445,14 +539,40 @@ def _delivery_day(index: pd.Index) -> pd.Index:
     return delivery_day(pd.DatetimeIndex(index))
 
 
+def _daily(result: BacktestResult) -> dict[str, object]:
+    """Settled profit per evaluated delivery day, as two parallel lists.
+
+    Written with every run so the headline's interval can be recomputed, and
+    a different block length tried, from the JSON alone rather than from a
+    second backtest. Columns rather than one record per day: a hourly sweep is
+    over twelve thousand of them.
+    """
+    days = result.evaluated
+    return {
+        "day": [day.day.isoformat() for day in days],
+        "profit_eur": [round(day.profit_eur, 2) for day in days],
+    }
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
+    from bess_arb.backtest.compare import compare_to_floor
     from bess_arb.backtest.metrics import summarise
     from bess_arb.backtest.runner import run_backtest
     from bess_arb.policy import POLICY_NAMES, build_policy
+    from bess_arb.series import load_price_history
 
     config, prices, regime, solver = _load(args)
+    if args.charge_tariff is not None:
+        config = config.with_charge_tariff(args.charge_tariff)
     backend = args.backend or config.backend
     policies: list[str] = args.policy or list(POLICY_NAMES)
+
+    # Every policy is built from the same multi-regime price history the
+    # forecaster trains on, so the floor's climatology and the forecaster's
+    # training set are the same prices read under the same gate. Settlement
+    # and the decision calendar still come from `prices`, the regime's own
+    # series: a result belongs to one market design.
+    history = load_price_history(config, args.regime)
 
     # Once per run, not once per sweep point: the forecast does not depend on
     # c_deg, so refitting inside the loop would triple the wall clock to
@@ -473,6 +593,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     first, last = _as_day(args.first_day), _as_day(args.last_day)
     summaries: list[dict[str, object]] = []
+    comparisons: list[dict[str, object]] = []
+    bootstrap = config.report.bootstrap
 
     for c_deg in sweep:
         battery = config.with_c_deg(c_deg).battery
@@ -483,7 +605,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         runs = {}
         built = {}
         for name in policies:
-            built[name] = build_policy(name, prices, forecaster=forecaster)
+            built[name] = build_policy(name, history, forecaster=forecaster)
             runs[name] = run_backtest(
                 prices,
                 built[name],
@@ -505,12 +627,54 @@ def _cmd_run(args: argparse.Namespace) -> int:
             metrics = {
                 name: value.with_bound(reference) for name, value in metrics.items()
             }
-        _print_metrics(metrics[name] for name in policies)
+        _print_metrics(metrics, policies)
+
+        if "floor" in runs and "oracle" in runs:
+            for name in policies:
+                if name in ("floor", "oracle"):
+                    continue
+                comparison = compare_to_floor(
+                    runs[name],
+                    runs["floor"],
+                    runs["oracle"],
+                    block_days=bootstrap.block_days,
+                    resamples=bootstrap.resamples,
+                    confidence=bootstrap.confidence,
+                    seed=config.seed,
+                )
+                _print_comparison(comparison)
+                row = comparison.as_dict()
+                row["sensitivity"] = []
+                for days in bootstrap.sensitivity_block_days:
+                    longer = compare_to_floor(
+                        runs[name],
+                        runs["floor"],
+                        runs["oracle"],
+                        block_days=days,
+                        resamples=bootstrap.resamples,
+                        confidence=bootstrap.confidence,
+                        seed=config.seed,
+                    )
+                    _print_sensitivity(longer)
+                    row["sensitivity"].append(
+                        {
+                            key: value
+                            for key, value in longer.as_dict().items()
+                            if key
+                            in (
+                                "block_days",
+                                "share_of_gap_interval",
+                                "at_or_below_floor",
+                            )
+                        }
+                    )
+                comparisons.append(row)
 
         for name in policies:
             result = runs[name]
             summary: dict[str, object] = {
                 **metrics[name].as_dict(),
+                "charge_tariff_eur_mwh": battery.charge_tariff_eur_mwh,
                 "regime": args.regime,
                 "backend": backend,
                 "solver_name": result.solver_name,
@@ -522,11 +686,35 @@ def _cmd_run(args: argparse.Namespace) -> int:
             }
             summary.update(_policy_diagnostics(name, built[name]))
             if name == "forecast" and forecaster is not None:
-                summary.update(_print_forecast_error(forecaster, prices))
+                summary.update(
+                    _print_forecast_error(
+                        forecaster, prices, {day.day for day in result.evaluated}
+                    )
+                )
+            summary["daily"] = _daily(result)
             summaries.append(summary)
 
     if args.json is not None:
-        _write_json(args.json, {"runs": summaries})
+        _write_json(args.json, {"runs": summaries, "comparisons": comparisons})
+    return 0
+
+
+def _cmd_figures(args: argparse.Namespace) -> int:
+    from bess_arb.config import load_config
+    from bess_arb.figures import draw_headline
+
+    config = load_config(args.config)
+    payload = json.loads(args.json.read_text(encoding="utf-8"))
+    forecast = next(run for run in payload["runs"] if run["policy"] == "forecast")
+    days = forecast["daily"]["day"]
+    battery = config.battery
+    title = (
+        f"{battery.p_max_mw:g} MW / {battery.e_max_mwh:g} MWh battery, OMIE day-ahead, "
+        f"{forecast['regime'].replace('_', '-')} regime: {len(days)} days, "
+        f"{days[0]} to {days[-1]}"
+    )
+    draw_headline(payload, args.out, title=title, central_c_deg=battery.c_deg_eur_mwh)
+    print(f"wrote {args.out}")
     return 0
 
 
@@ -637,6 +825,12 @@ def _cmd_bound(args: argparse.Namespace) -> int:
             "annual_minus_rolling_eur": round(difference, 2),
             "fraction_of_rolling": None if share is None else round(share, 6),
             "within_annual_solve_gap": within_tolerance,
+            # Unrounded, so "the rolling oracle reaches the dual bound" can
+            # be checked from the file to the last bit rather than to the
+            # cent the summaries above are rounded to.
+            "annual_objective_eur_exact": result.objective_eur,
+            "annual_bound_eur_exact": result.objective_bound_eur,
+            "rolling_profit_eur_exact": metrics.profit_eur,
         }
         print(
             f"\n\n  rolling oracle    EUR {metrics.profit_eur:,.2f}\n"
@@ -677,6 +871,7 @@ _DISPATCH: dict[tuple[str, str | None], Callable[[argparse.Namespace], int]] = {
     ("data", "crosscheck"): _cmd_data_crosscheck,
     ("run", None): _cmd_run,
     ("bound", None): _cmd_bound,
+    ("figures", None): _cmd_figures,
 }
 
 

@@ -2,7 +2,7 @@
 # identically on Windows, macOS and Linux; this file exists for Unix habit
 # and for anyone who types `make` before reading the README.
 
-.PHONY: help install lint fmt types imports toc toc-check test check backtest bound clean
+.PHONY: help install lint fmt types imports toc toc-check test check backtest figures bound clean
 
 help:
 	@echo "install  create the environment from uv.lock"
@@ -14,6 +14,7 @@ help:
 	@echo "test     pytest"
 	@echo "check    lint + types + imports + toc + test, as CI runs it"
 	@echo "backtest every policy over both regimes, all three c_deg values"
+	@echo "figures  the headline chart from the quarter-hourly backtest summary"
 	@echo "bound    the annual-window bound (DECISIONS.md 2.4)"
 
 install:
@@ -55,6 +56,10 @@ check: lint types imports toc-check test
 backtest:
 	uv run bess-arb run --regime quarter_hourly --sweep --json results/backtest_quarter_hourly.json
 	uv run bess-arb run --regime hourly --sweep --json results/backtest_hourly.json
+
+# Draws from the summary `backtest` wrote; solves nothing.
+figures:
+	uv run bess-arb figures --json results/backtest_quarter_hourly.json --out results/headline_quarter_hourly.png
 
 bound:
 	uv run bess-arb bound --regime hourly --json results/annual_bound.json

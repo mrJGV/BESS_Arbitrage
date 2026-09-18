@@ -117,6 +117,7 @@ source_modules = [
     "bess_arb.policy",
     "bess_arb.backtest",
     "bess_arb.forecast",
+    "bess_arb.figures",
 ]
 forbidden_modules = ["pyomo", "highspy", "pyoptinterface", "gurobipy"]
 
@@ -188,6 +189,7 @@ source_modules = [
     "bess_arb.model",
     "bess_arb.forecast.features",
     "bess_arb.policy",
+    "bess_arb.figures",
 ]
 forbidden_modules = ["lightgbm"]
 as_packages = false

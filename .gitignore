@@ -37,10 +37,10 @@ outputs/
 *.log
 hpc/logs/
 
-# A backtest summary is minutes of local compute from a committed snapshot,
-# so it is regenerated rather than tracked. results/annual_bound*.json stays
-# committed: it is the run a reader without a cluster cannot reproduce.
-results/backtest_*.json
+# results/ is committed: the annual bounds, the backtest summaries the README
+# quotes (with per-day profit, so its intervals can be recomputed) and the
+# headline chart drawn from them. `make backtest` and `make figures`
+# regenerate the last two.
 
 # --- OS / editor ----------------------------------------------------------
 .DS_Store
