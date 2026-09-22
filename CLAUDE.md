@@ -15,9 +15,9 @@ Arbitrage demonstrator for a 10 MW / 20 MWh battery in the Spanish
 day-ahead market (OMIE). The deliverable is a clean repository with a
 three-bar chart. It is not a paper and not a platform.
 
-Published rationale: `docs/DECISIONS.md`. **It is frozen as of the v1
-close and is not updated as work proceeds** — what becomes public is
-decided once, at the repo freeze.
+Published rationale: `docs/DECISIONS.md`. It describes the final state
+of the project, not its history, and was rewritten once, at the repo
+freeze, from the working record. Do not add slice findings to it.
 
 The working record is kept outside the tracked tree. Decisions, design
 and measurements are recorded there as work proceeds. Do not add those
