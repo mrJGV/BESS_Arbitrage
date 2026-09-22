@@ -23,6 +23,7 @@ from bess_arb.timeline import Regime
 __all__ = [
     "DEFAULT_CONFIG_PATH",
     "AnnualBoundConfig",
+    "BootstrapConfig",
     "BoundConfig",
     "Config",
     "ConfigError",
@@ -30,6 +31,7 @@ __all__ = [
     "ForecastConfig",
     "HorizonConfig",
     "RegimeWindow",
+    "ReportConfig",
     "SeriesSpec",
     "load_config",
 ]
@@ -230,6 +232,41 @@ class BoundConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class BootstrapConfig:
+    """The interval on the headline share, :mod:`bess_arb.backtest.compare`."""
+
+    block_days: int
+    resamples: int
+    confidence: float
+    sensitivity_block_days: tuple[int, ...] = ()
+    """Further block lengths whose intervals are reported beside the headline's."""
+
+    def __post_init__(self) -> None:
+        if self.block_days < 1:
+            raise ValueError(
+                f"report.bootstrap.block_days must be at least 1, got {self.block_days}"
+            )
+        if any(days < 1 for days in self.sensitivity_block_days):
+            raise ValueError(
+                "report.bootstrap.sensitivity_block_days must all be at least 1, got "
+                f"{list(self.sensitivity_block_days)}"
+            )
+        if self.resamples < 1:
+            raise ValueError(
+                f"report.bootstrap.resamples must be at least 1, got {self.resamples}"
+            )
+        if not 0.0 < self.confidence < 1.0:
+            raise ValueError(
+                f"report.bootstrap.confidence must lie in (0, 1), got {self.confidence}"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ReportConfig:
+    bootstrap: BootstrapConfig
+
+
+@dataclass(frozen=True, slots=True)
 class Config:
     """Everything ``config/params.yaml`` currently declares."""
 
@@ -240,6 +277,7 @@ class Config:
     bound: BoundConfig
     forecast: ForecastConfig
     bid: ScenarioConfig
+    report: ReportConfig
     backend: str
     solver: SolverConfig
     seed: int
@@ -250,12 +288,33 @@ class Config:
         The sensitivity sweep is three runs of one configuration, not three
         configurations — nothing else may drift between the points.
         """
+        return self._with_battery(
+            c_deg_eur_mwh=c_deg_eur_mwh,
+            charge_tariff_eur_mwh=self.battery.charge_tariff_eur_mwh,
+        )
+
+    def with_charge_tariff(self, charge_tariff_eur_mwh: float) -> Config:
+        """This config at a different network tariff on charged energy.
+
+        ``docs/DECISIONS.md`` §3.4 leaves the tariff parametrised at zero
+        because its regulatory status is under review, and asks for the
+        result at further values. This is how those runs are made: one
+        configuration, one number changed.
+        """
+        return self._with_battery(
+            c_deg_eur_mwh=self.battery.c_deg_eur_mwh,
+            charge_tariff_eur_mwh=charge_tariff_eur_mwh,
+        )
+
+    def _with_battery(
+        self, *, c_deg_eur_mwh: float, charge_tariff_eur_mwh: float
+    ) -> Config:
         battery = BatteryParams(
             p_max_mw=self.battery.p_max_mw,
             e_max_mwh=self.battery.e_max_mwh,
             eta_rt=self.battery.eta_rt,
             c_deg_eur_mwh=c_deg_eur_mwh,
-            charge_tariff_eur_mwh=self.battery.charge_tariff_eur_mwh,
+            charge_tariff_eur_mwh=charge_tariff_eur_mwh,
         )
         return Config(
             battery=battery,
@@ -265,6 +324,7 @@ class Config:
             bound=self.bound,
             forecast=self.forecast,
             bid=self.bid,
+            report=self.report,
             backend=self.backend,
             solver=self.solver,
             seed=self.seed,
@@ -314,6 +374,7 @@ def load_config(path: Path | None = None) -> Config:
             "bound",
             "forecast",
             "bid",
+            "report",
             "backend",
             "solver",
             "seed",
@@ -383,10 +444,37 @@ def load_config(path: Path | None = None) -> Config:
         bound=_load_bound(_section(raw, "bound")),
         forecast=_load_forecast(_section(raw, "forecast")),
         bid=_load_bid(_section(raw, "bid"), seed),
+        report=_load_report(_section(raw, "report")),
         backend=backend,
         solver=solver,
         seed=seed,
     )
+
+
+def _load_report(section: Mapping[str, Any]) -> ReportConfig:
+    _reject_unknown(section, {"bootstrap"}, "report")
+    bootstrap = _section(section, "bootstrap")
+    _reject_unknown(
+        bootstrap,
+        {"block_days", "resamples", "confidence", "sensitivity_block_days"},
+        "report.bootstrap",
+    )
+    sensitivity = bootstrap.get("sensitivity_block_days")
+    if not isinstance(sensitivity, list):
+        raise ConfigError("report.bootstrap.sensitivity_block_days must be a list")
+    try:
+        return ReportConfig(
+            bootstrap=BootstrapConfig(
+                block_days=int(bootstrap["block_days"]),
+                resamples=int(bootstrap["resamples"]),
+                confidence=float(bootstrap["confidence"]),
+                sensitivity_block_days=tuple(int(days) for days in sensitivity),
+            )
+        )
+    except KeyError as error:
+        raise ConfigError(f"report.bootstrap is missing {error.args[0]!r}") from None
+    except ValueError as error:
+        raise ConfigError(f"report.bootstrap: {error}") from None
 
 
 def _load_bid(section: Mapping[str, Any], seed: int) -> ScenarioConfig:

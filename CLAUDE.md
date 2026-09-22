@@ -15,24 +15,27 @@ Arbitrage demonstrator for a 10 MW / 20 MWh battery in the Spanish
 day-ahead market (OMIE). The deliverable is a clean repository with a
 three-bar chart. It is not a paper and not a platform.
 
-Published rationale: `docs/DECISIONS.md`. **It is frozen as of the v1
-close and is not updated as work proceeds** — what becomes public is
-decided once, at the repo freeze.
+Published rationale: `docs/DECISIONS.md`. It describes the final state
+of the project, not its history, and was rewritten once, at the repo
+freeze, from the working record. Do not add slice findings to it.
 
-The working record lives in `docs/private/`, which is gitignored.
-Decisions, design and measurements are recorded there as work proceeds.
-Do not add those files to the repo, do not name them, and do not
-describe their contents in tracked files or commit messages.
+The working record is kept outside the tracked tree. Decisions, design
+and measurements are recorded there as work proceeds. Do not add those
+files to the repo, do not name them, and do not describe their contents
+in tracked files or commit messages.
 
 Every document carries a generated index. After editing one, run
 `make toc`; `make check` fails if an index is stale.
 
 # Invariants — never violate
 
-1. **No lookahead.** No variable used to decide on day D may carry a
-   timestamp later than 12:00 CET on D-1. Day D prices are NOT known at
-   decision time. Use published forecast series as exogenous inputs,
-   never realised values.
+1. **No lookahead.** No variable used to decide on day D may have been
+   *published* after 12:00 CET on D-1. The invariant is read on
+   publication time, for every series: the REE D+1 forecasts are on the
+   wire the morning before the gate, and a delivery day's prices are
+   published about 13:00 on the day before delivery, so at the gate for
+   D every price through D-1 is known and none of D's is. Use published
+   forecast series as exogenous inputs, never realised values.
 
 2. **One optimiser.** Every policy (floor, forecast, oracle) obtains its
    schedule from the same `BatteryMILP` instance via
@@ -140,5 +143,7 @@ Pyomo backend this means a persistent/APPSI interface, not a plain
 Conventional Commits with module scope (`feat(model):`, `test(model):`,
 `chore(data):`, ...). **A commit message says what changed, never why** —
 the reasoning belongs in the code and the documents, which already carry
-it. One branch per slice, PR into `main`, squash-merge with CI green. Tags `v0`/`v1`/`v2` mark the version ladder. The data
-snapshot gets its own commit so the freeze point is one hash.
+it. One branch per slice, PR into `main`, **merge commit** (never squash)
+with CI green. Tags `v0`/`v1`/`v2` mark the version ladder. The data
+snapshot gets its own commit so the freeze point is one hash; a squash would
+fold it into its slice.

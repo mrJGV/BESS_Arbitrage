@@ -164,6 +164,6 @@ would make that argument about a market this snapshot does not cover.
   `marginalpdbc` daily files. No credentials required.
 - **Retrieved:** 24 August 2026.
 
-The GPL in this repository covers the **code**. The data is redistributed
+The Apache-2.0 licence in this repository covers the **code**. The data is redistributed
 here under ESIOS's and OMIE's own terms and remains theirs; attribute them,
 not this repository, if you reuse it.

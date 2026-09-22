@@ -20,7 +20,7 @@ import pytest
 from bess_arb.forecast.lgbm import ForecastSpec, PriceForecaster
 from bess_arb.policy.floor import FloorPolicy
 from bess_arb.policy.forecast import ForecastPolicy
-from bess_arb.timeline import Regime, to_market_time, utc_index
+from bess_arb.timeline import Regime, price_published_index, to_market_time, utc_index
 
 HOURLY = Regime("hourly", 1.0)
 TAUS = (0.1, 0.3, 0.5, 0.7, 0.9)
@@ -144,7 +144,7 @@ def test_the_shift_is_not_a_single_scalar_across_the_day() -> None:
 def test_the_residual_shift_reads_nothing_after_the_gate() -> None:
     """Invariant 1. A residual needs a price that has already cleared.
 
-    Prices from the gate onwards are replaced with an absurd value. If any of
+    Prices published after the gate are replaced with an absurd value. If any of
     them reached the residual buffer, the shift would move.
     """
     prices = _prices()
@@ -158,7 +158,11 @@ def test_the_residual_shift_reads_nothing_after_the_gate() -> None:
     _warm(honest, day, 40)
 
     poisoned_prices = prices.copy()
-    poisoned_prices.loc[poisoned_prices.index >= gate] = 9999.0
+    poisoned_prices.loc[
+        np.asarray(
+            price_published_index(pd.DatetimeIndex(poisoned_prices.index)) > gate
+        )
+    ] = 9999.0
     poisoned = _forecaster(poisoned_prices)
     _warm(poisoned, day, 40)
 

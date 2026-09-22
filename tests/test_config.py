@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from bess_arb.config import DEFAULT_CONFIG_PATH, ConfigError, load_config
-from bess_arb.forecast.features import FIRST_COMPLETE_LAG_DAYS
+from bess_arb.forecast.features import FIRST_KNOWN_LAG_DAYS
 
 MINIMAL_CONFIG = """
 battery:
@@ -75,6 +75,12 @@ bid:
   n_scenarios: 5
   min_scenario_days: 30
   centre_residuals: true
+report:
+  bootstrap:
+    block_days: 7
+    resamples: 10000
+    confidence: 0.95
+    sensitivity_block_days: [14, 28]
 backend: pyomo
 solver:
   name: highs
@@ -232,17 +238,19 @@ def test_a_delivery_day_with_a_time_on_it_is_rejected(tmp_path: Path) -> None:
         load_config(_write(tmp_path, text))
 
 
-def test_the_forecast_lags_start_after_the_last_complete_delivery_day() -> None:
-    """The shipped config cannot ask for a lag that reaches past the gate.
+def test_the_forecast_lags_start_at_the_last_published_delivery_day() -> None:
+    """The shipped config reads yesterday, and cannot ask for today.
 
-    ``build_features`` refuses one, so this would surface as an exception at
-    the first forecast rather than as a wrong number — but the shipped file is
-    what a reader checks, and a lag of 1 sitting in it would read as endorsed.
+    ``build_features`` refuses a zero-day lag, so that would surface as an
+    exception at the first forecast rather than as a wrong number — but the
+    shipped file is what a reader checks. And the shortest lag must actually
+    be the last published day: a config that skipped yesterday would be
+    causal and blind.
     """
     lags = load_config().forecast.lags_days
 
     assert lags
-    assert min(lags) >= FIRST_COMPLETE_LAG_DAYS
+    assert min(lags) == FIRST_KNOWN_LAG_DAYS
 
 
 def test_the_forecast_hyperparameters_reach_the_loader_untouched() -> None:
@@ -271,6 +279,31 @@ def test_an_unknown_forecast_key_is_refused(tmp_path: Path) -> None:
     text = MINIMAL_CONFIG.replace("  refit_days: 30\n", "  refit_dayz: 30\n")
 
     with pytest.raises(ConfigError, match="refit_dayz"):
+        load_config(_write(tmp_path, text))
+
+
+def test_the_headline_interval_settings_come_from_the_file() -> None:
+    bootstrap = load_config().report.bootstrap
+
+    assert bootstrap.block_days >= 1
+    assert bootstrap.resamples >= 1000
+    assert 0.0 < bootstrap.confidence < 1.0
+    assert bootstrap.sensitivity_block_days
+    assert all(days > bootstrap.block_days for days in bootstrap.sensitivity_block_days)
+
+
+def test_a_confidence_outside_the_unit_interval_is_rejected(tmp_path: Path) -> None:
+    """95 for 0.95 is the likely typo, and it would make every interval empty."""
+    text = MINIMAL_CONFIG.replace("confidence: 0.95", "confidence: 95")
+
+    with pytest.raises(ConfigError, match="confidence"):
+        load_config(_write(tmp_path, text))
+
+
+def test_an_unknown_bootstrap_key_is_refused(tmp_path: Path) -> None:
+    text = MINIMAL_CONFIG.replace("block_days: 7", "block_day: 7")
+
+    with pytest.raises(ConfigError, match="block_day"):
         load_config(_write(tmp_path, text))
 
 

@@ -23,8 +23,15 @@ Three mechanisms, deliberately unequal
 
 3. **Negative controls.** A test that has quietly stopped looking passes just
    as silently as the bug it was meant to catch, so each mechanism is shown
-   failing on a table that really does leak — a one-day lag for the first, and
-   a forecaster given tomorrow's prices for the second.
+   failing on a table that really does leak — a lag stamped a day too late
+   for the first, and a forecaster given tomorrow's prices for the second.
+
+"After the gate" means *published* after it. A delivery day's prices are
+public from about 13:00 on the day before delivery, so at the gate for D the
+whole of D-1 is known and is allowed to move the forecast; what may not is
+anything from D onwards. The perturbation therefore rewrites prices by
+publication instant, and one test checks the other direction — that D-1's
+afternoon really is read — so the suite cannot pass by ignoring it.
 
 Resolutions are parametrised because a Parquet round trip hands back
 microsecond timestamps while ``Timestamp.value`` is nanoseconds, and comparing
@@ -44,14 +51,16 @@ import pytest
 from bess_arb.forecast.features import (
     ALWAYS_KNOWN,
     EXOGENOUS_COLUMNS,
-    FIRST_COMPLETE_LAG_DAYS,
+    FIRST_KNOWN_LAG_DAYS,
     build_features,
 )
 from bess_arb.forecast.lgbm import ForecastSpec, PriceForecaster
 from bess_arb.timeline import (
     MARKET_TZ,
     Regime,
+    delivery_day,
     gate_close_utc,
+    price_published_index,
     to_market_time,
     utc_index,
 )
@@ -59,7 +68,13 @@ from bess_arb.timeline import (
 HOURLY = Regime("hourly", 1.0)
 QUARTER_HOURLY = Regime("quarter_hourly", 0.25)
 
-LAGS = (2, 3, 4, 5, 6, 7, 8)
+LAGS = (1, 2, 3, 4, 5, 6, 7, 8)
+
+
+def _published_after(prices: pd.Series, gate: pd.Timestamp) -> np.ndarray:
+    """Mask of the prices that were not yet public at ``gate``."""
+    return np.asarray(price_published_index(pd.DatetimeIndex(prices.index)) > gate)
+
 
 # Long enough to fit, short enough to fit fast: two years of synthetic history
 # either side of a March transition, so the 23-hour day is inside the window
@@ -206,17 +221,27 @@ def test_only_the_calendar_columns_may_skip_a_publication_instant(
     assert undeclared == set(ALWAYS_KNOWN)
 
 
-def test_training_rows_are_limited_to_settled_prices(regime: Regime) -> None:
-    """A fit for day D may not see a price that had not cleared by ``gate(D)``."""
+def test_training_rows_are_limited_to_published_prices(regime: Regime) -> None:
+    """A fit for day D may see every price through D-1 and nothing from D.
+
+    The whole of D-1 was published the afternoon before the gate, so the last
+    admissible row is the last period of D-1 — after the gate on the period
+    clock, and that is the point. Day D's prices publish an hour after the
+    gate and none of its rows may be admitted.
+    """
+    day = dt.date(2025, 3, 3)
     table = build_features(
         _prices(regime), _exog(regime), regime, lead_days=0, lags_days=LAGS
     )
-    cutoff = gate_close_utc(dt.date(2025, 3, 3))
+    cutoff = gate_close_utc(day)
 
     rows = table.trainable_before(cutoff)
-    last = table.values.index[rows.to_numpy()][-1]
+    admitted = pd.DatetimeIndex(table.values.index[rows.to_numpy()])
+    last = admitted[-1]
 
-    assert last + regime.step <= cutoff
+    assert delivery_day(pd.DatetimeIndex([last]))[0] == day - dt.timedelta(days=1)
+    assert last > cutoff
+    assert price_published_index(pd.DatetimeIndex([last]))[0] <= cutoff
     assert not rows.loc[table.settled_at > cutoff].any()
 
 
@@ -233,15 +258,16 @@ def _forecaster(
     )
 
 
-def test_rewriting_every_price_after_the_gate_changes_no_forecast(
+def test_rewriting_every_price_published_after_the_gate_changes_no_forecast(
     regime: Regime,
 ) -> None:
     """The strongest form of the invariant, and the one that trusts nothing.
 
-    Everything from ``gate(D)`` onwards is replaced with a price no market has
-    ever cleared. If any part of the pipeline — a lag, a rolling window, a
-    training filter, the exogenous join — reached past the gate, the forecast
-    would move. It does not move at all, not to a tolerance.
+    Every price not yet public at ``gate(D)`` — day D onwards — is replaced
+    with a price no market has ever cleared. If any part of the pipeline — a
+    lag, a rolling window, a training filter, the exogenous join — reached
+    past the gate, the forecast would move. It does not move at all, not to a
+    tolerance.
     """
     day = dt.date(2025, 9, 10)
     gate = gate_close_utc(day)
@@ -251,11 +277,40 @@ def test_rewriting_every_price_after_the_gate_changes_no_forecast(
     honest = _forecaster(prices, exog, regime).forecast(day, window)
 
     tampered = prices.copy()
-    tampered.loc[tampered.index >= gate] = 999.0
+    tampered.loc[_published_after(tampered, gate)] = 999.0
     leaked = _forecaster(tampered, exog, regime).forecast(day, window)
 
     assert honest is not None and leaked is not None
     np.testing.assert_array_equal(honest, leaked)
+
+
+def test_the_afternoon_of_the_day_before_is_known_and_is_read(
+    regime: Regime,
+) -> None:
+    """The other direction: D-1's afternoon is public at the gate and used.
+
+    Without this the perturbation test could pass by a forecaster that reads
+    nothing after noon on D-1 at all — causal, and blind to the single most
+    informative day it has. Rewriting D-1's afternoon must move the forecast.
+    """
+    day = dt.date(2025, 9, 10)
+    window = utc_index(day, day + dt.timedelta(days=1), regime)
+    prices, exog = _prices(regime), _exog(regime)
+
+    honest = _forecaster(prices, exog, regime).forecast(day, window)
+
+    eve = day - dt.timedelta(days=1)
+    local = to_market_time(pd.DatetimeIndex(prices.index))
+    afternoon = (pd.Index(local.date) == eve) & (np.asarray(local.hour) >= 12)
+    tampered = prices.copy()
+    tampered.loc[afternoon] = 999.0
+    informed = _forecaster(tampered, exog, regime).forecast(day, window)
+
+    assert honest is not None and informed is not None
+    assert not np.array_equal(honest, informed), (
+        "rewriting the afternoon of D-1 changed nothing: the forecaster is "
+        "not reading a day that was public at the gate"
+    )
 
 
 def test_rewriting_the_exogenous_forecast_after_the_gate_changes_no_forecast(
@@ -313,15 +368,16 @@ def test_a_forecast_does_not_depend_on_the_order_days_are_visited(
 # --------------------------------------------------------------------------
 
 
-def test_a_one_day_lag_is_refused(regime: Regime) -> None:
-    """D-1 has not finished at noon on D-1. Asking for it is not a tuning choice.
+def test_a_zero_day_lag_is_refused(regime: Regime) -> None:
+    """Day D's prices publish an hour after the gate. Asking for them is not a
+    tuning choice.
 
     Refused at construction rather than caught downstream, so a config file
     cannot introduce the bug this whole module exists to prevent.
     """
-    with pytest.raises(ValueError, match="not finished when the gate closes"):
+    with pytest.raises(ValueError, match="not published when the gate closes"):
         build_features(
-            _prices(regime), _exog(regime), regime, lead_days=0, lags_days=(1, 2, 3)
+            _prices(regime), _exog(regime), regime, lead_days=0, lags_days=(0, 1, 2)
         )
 
 
@@ -330,16 +386,16 @@ def test_the_publication_check_catches_a_lag_that_reaches_too_far(
 ) -> None:
     """Positive control for mechanism 1.
 
-    The builder refuses a one-day lag, so the leak is forged directly on the
-    table: the ``available_at`` of a lag column is moved one day later, which
-    is what a lag of ``FIRST_COMPLETE_LAG_DAYS - 1`` would really have. If
-    :meth:`FeatureTable.violations` returned nothing here it would be
+    The builder refuses a zero-day lag, so the leak is forged directly on the
+    table: the ``available_at`` of the shortest lag column is moved one day
+    later, which is what a lag of ``FIRST_KNOWN_LAG_DAYS - 1`` would really
+    have. If :meth:`FeatureTable.violations` returned nothing here it would be
     returning nothing everywhere.
     """
     table = build_features(
         _prices(regime), _exog(regime), regime, lead_days=0, lags_days=LAGS
     )
-    column = f"price_lag{FIRST_COMPLETE_LAG_DAYS}d"
+    column = f"price_lag{FIRST_KNOWN_LAG_DAYS}d"
     table.available_at[column] = table.available_at[column] + pd.Timedelta(days=1)
 
     found = table.violations()
@@ -375,7 +431,7 @@ def test_the_perturbation_check_catches_a_forecaster_given_the_future(
 
     honest = leaky(prices).forecast(day, window)
     tampered = prices.copy()
-    tampered.loc[tampered.index >= gate] = 999.0
+    tampered.loc[_published_after(tampered, gate)] = 999.0
     leaked = leaky(tampered).forecast(day, window)
 
     assert honest is not None and leaked is not None

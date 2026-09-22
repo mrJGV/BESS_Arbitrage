@@ -88,6 +88,8 @@ def test_the_scan_looks_at_the_modules_it_claims_to() -> None:
         "runner.py",
         "metrics.py",
         "bound.py",
+        "compare.py",
+        "figures.py",
     } <= scanned
 
 

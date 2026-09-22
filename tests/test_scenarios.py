@@ -2,8 +2,8 @@
 
 :class:`~bess_arb.scenarios.BeliefResiduals` is the whole of v3's new
 modelling content, so what it must not do is the interesting half. It must not
-admit a residual from a decision whose periods had not cleared at this gate
-(invariant 1), it must not add a residual whose window describes a different
+admit a residual from a decision whose window had not been published at this
+gate (invariant 1), it must not add a residual whose window describes a different
 clock (invariant 4, via the DST-length days), and it must not quietly move the
 scenario set's centre away from the policy's own point belief -- which would
 turn a v3-versus-v2 comparison into a statement about two things at once.
@@ -23,7 +23,13 @@ import pandas as pd
 import pytest
 
 from bess_arb.scenarios import BeliefResiduals, ScenarioConfig
-from bess_arb.timeline import Regime, gate_close_utc, to_market_time, utc_index
+from bess_arb.timeline import (
+    Regime,
+    gate_close_utc,
+    price_published_index,
+    to_market_time,
+    utc_index,
+)
 
 HOURLY = Regime("hourly", 1.0)
 QUARTER = Regime("quarter_hourly", 0.25)
@@ -75,12 +81,13 @@ def _config(**overrides: object) -> ScenarioConfig:
 # -- causality --------------------------------------------------------------
 
 
-def test_pool_admits_nothing_that_had_not_cleared_at_the_gate() -> None:
+def test_pool_admits_nothing_that_was_not_published_at_the_gate() -> None:
     """Invariant 1, as this module reads it.
 
-    Every stamp of an admitted residual must predate the decision's gate.
-    Checked against the stamps themselves rather than against a day count,
-    because the off-by-one that matters here is one *period*, not one day.
+    Every admitted residual's window must have been *published* by the
+    decision's gate. Checked against the publication instants rather than
+    against a day count, because the off-by-one that matters here is one
+    delivery day's publication, not one period.
     """
     prices = _prices(dt.date(2024, 1, 1), dt.date(2024, 4, 30))
     residuals = BeliefResiduals(prices, _config())
@@ -88,7 +95,7 @@ def test_pool_admits_nothing_that_had_not_cleared_at_the_gate() -> None:
 
     day = dt.date(2024, 3, 1)
     window = _window(day)
-    gate = gate_close_utc(day)
+    gate_ns = int(gate_close_utc(day).as_unit("ns").value)
     pool = residuals.pool(day, window)
     assert pool is not None
 
@@ -100,36 +107,38 @@ def test_pool_admits_nothing_that_had_not_cleared_at_the_gate() -> None:
     ]
     assert admitted, "nothing was admitted; the test would pass vacuously"
     for past in admitted:
-        last = residuals._beliefs[past].stamps_ns.max()
-        assert last < int(gate.as_unit("ns").value)
+        assert residuals._beliefs[past].published_ns <= gate_ns
+    # And the reading is publication, not delivery: the newest admitted
+    # window runs to the end of D-1, after the gate on the period clock.
+    newest = residuals._beliefs[max(admitted)]
+    assert int(newest.stamps_ns.max()) > gate_ns
 
 
-def test_gate_boundary_is_strict_not_inclusive() -> None:
-    """``t == gate`` is excluded, and it is a case that really occurs.
+def test_the_boundary_is_publication_not_delivery() -> None:
+    """The decision two days back is admitted; the one a day back is not.
 
-    Noon is a period boundary on both grids, so a window containing the gate
-    instant exactly is ordinary rather than contrived. That period's price
-    publishes around 13:00 -- an hour after the decision was due -- so
-    admitting it would be reading a price that did not exist.
+    Deciding D at noon on D-1: the window decided on D-2 covers D-2 and D-1,
+    both published by the afternoon of D-2, so it is known in full. The
+    window decided on D-1 covers D-1 and D, and D publishes an hour after
+    the gate. Both windows end after the gate on the period clock, which is
+    exactly why the cut cannot be made on period timestamps.
     """
     prices = _prices(dt.date(2024, 1, 1), dt.date(2024, 3, 31))
     residuals = BeliefResiduals(prices, _config(min_scenario_days=1))
-
     day = dt.date(2024, 3, 1)
-    gate = gate_close_utc(day)
-    # A one-period window sitting exactly on the gate.
-    at_gate = pd.DatetimeIndex([gate], name="datetime_utc")
-    residuals.record(dt.date(2024, 2, 28), at_gate, np.array([50.0]))
+    for past in (day - dt.timedelta(days=2), day - dt.timedelta(days=1)):
+        residuals.record(past, _window(past), np.full(len(_window(past)), 50.0))
 
-    assert not residuals._eligible(dt.date(2024, 2, 28), day, at_gate)
+    assert residuals._eligible(day - dt.timedelta(days=2), day, _window(day))
+    assert not residuals._eligible(day - dt.timedelta(days=1), day, _window(day))
 
 
-def test_poisoning_post_gate_prices_cannot_move_the_pool() -> None:
+def test_poisoning_prices_published_after_the_gate_cannot_move_the_pool() -> None:
     """The perturbation check, on the one object that reads realised prices.
 
     Declared publication instants are only as good as the bookkeeping behind
-    them. This trusts nothing: rewrite every price at or after the gate and
-    require the pool to come back bit-identical.
+    them. This trusts nothing: rewrite every price published after the gate
+    and require the pool to come back bit-identical.
     """
     day = dt.date(2024, 3, 1)
     window = _window(day)
@@ -137,7 +146,9 @@ def test_poisoning_post_gate_prices_cannot_move_the_pool() -> None:
 
     clean = _prices(dt.date(2024, 1, 1), dt.date(2024, 4, 30))
     poisoned = clean.copy()
-    poisoned[poisoned.index >= gate] = -999.0
+    poisoned[
+        np.asarray(price_published_index(pd.DatetimeIndex(clean.index)) > gate)
+    ] = -999.0
 
     pools = []
     for series in (clean, poisoned):

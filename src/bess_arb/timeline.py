@@ -41,6 +41,27 @@ passes the no-lookahead test under this definition passes under the other as
 well. It is also what the market actually does: OMIE quotes session times in
 peninsular local time. If that ever needs to change it is one constant here
 and nowhere else.
+
+When a day-ahead price becomes known
+------------------------------------
+
+A day-ahead price is not known when its period is delivered; it is known when
+the auction result is published. The auction for delivery day X closes at
+noon on X-1 and OMIE publishes the whole of X, every period at once, about an
+hour later. :func:`price_published_utc` is that instant, and it is the
+timestamp invariant 1 is read on for realised prices — the same publication-
+time reading the exogenous forecast series already get, applied to the price
+itself.
+
+Two consequences, and they go in opposite directions. At the gate for day D
+every price through D-1 has been public for about twenty-three hours, so a
+one-day price lag is admissible and the last known day is D-1, not D-2. And
+day D's own prices publish an hour *after* that gate, so a zero-day lag is
+lookahead under this reading exactly as under the literal one. The 13:00 hour
+is taken on trust, like the exogenous bundle's deadline: any hour between the
+auction close on X-1 and the next gate gives the same admissible set, so the
+constant decides only whether the no-lookahead audit passes, never what the
+model sees.
 """
 
 from __future__ import annotations
@@ -55,6 +76,7 @@ __all__ = [
     "GATE_CLOSE_LOCAL_HOUR",
     "INDEX_NAME",
     "MARKET_TZ",
+    "PRICE_PUBLICATION_LOCAL_HOUR",
     "UTC",
     "DayLike",
     "Regime",
@@ -66,6 +88,8 @@ __all__ = [
     "hours_in_day",
     "periods_in_day",
     "periods_per_day",
+    "price_published_index",
+    "price_published_utc",
     "to_market_time",
     "utc_index",
     "validate_index",
@@ -83,6 +107,11 @@ through a merge or a Parquet round trip still says which convention it is in."""
 GATE_CLOSE_LOCAL_HOUR = 12
 """Day-ahead bid submission closes at noon, market local time. See the module
 docstring for why local noon rather than a fixed UTC+1."""
+
+PRICE_PUBLICATION_LOCAL_HOUR = 13
+"""When OMIE publishes a delivery day's prices: about an hour after the
+auction for that day closes, on the day before delivery. Taken on trust, and
+inert for the model — see the module docstring."""
 
 DayLike = dt.date | str
 """A delivery day: a ``date``, or an ISO ``YYYY-MM-DD`` string.
@@ -285,6 +314,39 @@ def gate_close_utc(day: DayLike) -> pd.Timestamp:
         dt.datetime.combine(eve, dt.time(GATE_CLOSE_LOCAL_HOUR)), tz=MARKET_TZ
     )
     return local.tz_convert(UTC)
+
+
+def price_published_utc(day: DayLike) -> pd.Timestamp:
+    """When the day-ahead prices for delivery day ``day`` became public.
+
+    13:00 market-local on D-1, as UTC — the auction for ``day`` closes at
+    noon on D-1 and the result is published about an hour later. This is the
+    instant invariant 1 is read on for a realised price: a price is
+    admissible for a decision iff this instant is at or before that
+    decision's gate, which admits every day through D-1 and nothing from D.
+    """
+    eve = _as_day(day) - dt.timedelta(days=1)
+    local = pd.Timestamp(
+        dt.datetime.combine(eve, dt.time(PRICE_PUBLICATION_LOCAL_HOUR)), tz=MARKET_TZ
+    )
+    return local.tz_convert(UTC)
+
+
+def price_published_index(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """:func:`price_published_utc` of each instant's own delivery day.
+
+    Vectorised over an index, because the floor, the feature tables and the
+    residual pools all need it for every period of a multi-year series. Every
+    period of one delivery day maps to the same instant, so on a sorted index
+    the result is non-decreasing, which is what a prefix-sum lookup needs.
+    """
+    days = delivery_day(index)
+    unique = pd.Index(sorted(set(days)))
+    published = pd.Series(
+        [price_published_utc(d).value for d in unique], index=unique, dtype="int64"
+    )
+    values = published.reindex(days).to_numpy(dtype="int64")
+    return pd.DatetimeIndex(values, tz=UTC, name="published_at").as_unit("ns")
 
 
 def delivery_day(index: pd.DatetimeIndex) -> pd.Index:

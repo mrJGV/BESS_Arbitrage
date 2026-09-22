@@ -16,34 +16,42 @@ The rule, in one line
 
 That needs one distinction the invariant's own wording leaves implicit. A
 series has a *valid time* — the period it describes — and a *publication
-time* — when its value was first knowable. For **realised** series the two
-are welded together: a price cannot be known before its period has run, so
-``available_at`` is the *end* of the period, ``t + dt``. For a **forecast**
-series they come apart, and that is the whole reason forecasts are usable at
-all: the "Prevision diaria D+1" family (indicators 1775/1777/1779) is
-published once per day covering the following day, so a value describing
-20:00 on day D was on the wire the previous morning.
+time* — when its value was first knowable. The invariant is read on
+publication time, for every series alike:
 
-Both readings are needed and they do not conflict. CLAUDE.md says in the same
-breath that no variable may carry a timestamp later than the gate *and* that
-published forecast series are the exogenous inputs; only the publication-time
-reading satisfies both. And on realised prices the rule collapses exactly onto
-the strict timestamp reading :mod:`bess_arb.policy.floor` already uses: with
-``available_at = t + dt <= gate`` and ``dt`` the period length, the admissible
-prices are precisely those with ``t < gate``. The two policies read the same
-history; nothing was loosened to let the forecaster in.
+- The "Prevision diaria D+1" family (indicators 1775/1777/1779) is published
+  once per day covering the following day, so a value describing 20:00 on
+  day D was on the wire the previous morning. That is the whole reason a
+  forecast is usable at all.
+- A day-ahead **price** is not known when its period is delivered either. It
+  is known when OMIE publishes the auction result: the whole of delivery day
+  X, every period at once, about an hour after the auction for X closes at
+  noon on X-1 (:func:`bess_arb.timeline.price_published_utc`). So at the
+  gate for D every price through D-1 has been public for about a day, and
+  none of D's has.
+
+The same reading governs the training filter. A row's target is admissible
+for a fit made at ``gate(D)`` iff its own delivery day had been published by
+then, which is every day through D-1. It is also the reading
+:mod:`bess_arb.policy.floor` applies to its climatology and
+:mod:`bess_arb.scenarios` to its residual pool, so every policy reads the same
+history.
 
 **What is assumed, and where it would break.** ``docs/DECISIONS.md`` §5.3
 records the D+1 family as fixed at vintage D-1 and never rewritten — it is the
 only family that survives the gate at all, and the rolling one was rejected on
 measured evidence. What §5.3 does not fix is the *hour* on D-1, and the frozen
 snapshot cannot supply it: it stores valid times and has no publication column.
-So the noon deadline is the one input this module takes on trust. It is
+So the noon deadline is one input this module takes on trust. It is
 therefore written down as a constant, :data:`EXOGENOUS_PUBLISHED_AT_GATE`,
 rather than buried in an expression: if
 the D+1 bundle turned out to land at 14:00 on D-1, this is the single line
 that would change, and every exogenous feature would become inadmissible
-together rather than one of them quietly staying in.
+together rather than one of them quietly staying in. The price publication
+hour is the other, held in :data:`bess_arb.timeline.PRICE_PUBLICATION_LOCAL_HOUR`
+for the same reason; unlike the exogenous deadline it is inert for the model,
+since any hour between the auction close and the next gate admits the same
+days.
 
 Two horizons, two information sets
 ----------------------------------
@@ -56,22 +64,26 @@ preference, it is what is on the wire, and it is why the tables are built per
 ``lead_days``: lead 0 carries the exogenous block and lead 1 does not.
 
 The lag features are anchored on the *same* gate for both leads, so a column
-named ``price_lag2d`` means the same history in both tables and only the
+named ``price_lag1d`` means the same history in both tables and only the
 exogenous block differs.
 
-Why lags start at two days
---------------------------
+Why lags start at one day, and not at zero
+------------------------------------------
 
-The gate is noon on D-1, so D-1 is still running: its afternoon has not
-happened. The most recent *complete* delivery day is D-2. A ``price_lag1d``
-column would be the classic lookahead bug in this project, which is why
-:func:`build_features` refuses a lag below :data:`FIRST_COMPLETE_LAG_DAYS`
-rather than trusting the config file, and why the test suite builds one
-deliberately and checks that it is caught.
+At the gate for D the last delivery day whose prices are public is D-1,
+published the previous afternoon. So the shortest admissible lag is one day,
+and ``price_lag1d`` carries yesterday's whole curve, evening peak included.
+A ``price_lag0d`` column would be day D's own prices, which publish an hour
+*after* the gate: that is the lookahead bug in this project, and
+:func:`build_features` refuses a lag below :data:`FIRST_KNOWN_LAG_DAYS` rather
+than trusting the config file. The test suite asks for one deliberately and
+checks that it is caught.
 
-The part of D-1 that *is* readable — everything up to noon — is not thrown
-away: it is ``price_pregate_mean``, the one feature whose ``available_at`` is
-the gate instant itself.
+Earlier versions of this module read the invariant on delivery time and so
+started the lags at two days, leaving only the morning of D-1 in a separate
+feature. That was a conservative choice, not an information-set requirement,
+and it threw away the single most informative predictor a battery has:
+yesterday's evening peak.
 """
 
 from __future__ import annotations
@@ -83,12 +95,12 @@ import pandas as pd
 
 from bess_arb.model.spec import FloatArray
 from bess_arb.timeline import (
-    GATE_CLOSE_LOCAL_HOUR,
     UTC,
     Regime,
-    day_bounds,
     delivery_day,
     gate_close_utc,
+    price_published_index,
+    price_published_utc,
     to_market_time,
 )
 
@@ -96,19 +108,20 @@ __all__ = [
     "ALWAYS_KNOWN",
     "EXOGENOUS_COLUMNS",
     "EXOGENOUS_PUBLISHED_AT_GATE",
-    "FIRST_COMPLETE_LAG_DAYS",
+    "FIRST_KNOWN_LAG_DAYS",
     "TIME_OF_DAY_KEYED",
     "FeatureTable",
     "Violation",
     "build_features",
 ]
 
-FIRST_COMPLETE_LAG_DAYS = 2
+FIRST_KNOWN_LAG_DAYS = 1
 """The shortest admissible price lag, in delivery days.
 
-At noon on D-1 the last delivery day that has finished is D-2. See the module
-docstring; this constant is the difference between a working backtest and a
-number that cannot be earned.
+At the gate for D the last delivery day whose prices have been published is
+D-1; day D's own publish an hour after the gate. See the module docstring;
+this constant is the difference between a working backtest and a number that
+cannot be earned.
 """
 
 EXOGENOUS_PUBLISHED_AT_GATE = True
@@ -187,7 +200,8 @@ class FeatureTable:
     gate: pd.Series
     """The gate each row is decided under: noon local on D-1, in UTC."""
     settled_at: pd.Series
-    """When the row's target became observable — the end of its own period."""
+    """When the row's target became observable — the publication of its own
+    delivery day's prices, about 13:00 local on the day before delivery."""
     target: pd.Series
     lead_days: int
     regime: Regime
@@ -247,12 +261,13 @@ class FeatureTable:
         return self.target.notna() & self.values[priced].notna().any(axis=1)
 
     def trainable_before(self, cutoff: pd.Timestamp) -> pd.Series:
-        """Rows whose target had already settled at ``cutoff``.
+        """Rows whose target had already been published at ``cutoff``.
 
         The training-set filter, and the second place a leak could enter: a
-        model fitted for day D must not have seen a price that had not cleared
-        by ``gate(D)``. Every such row's own features predate its own gate,
-        which precedes its settlement, so this one comparison is sufficient.
+        model fitted for day D must not have seen a price that had not been
+        published by ``gate(D)``. Every such row's own features predate its
+        own gate, which precedes its publication, so this one comparison is
+        sufficient.
         """
         return self.usable() & (self.settled_at <= cutoff)
 
@@ -278,12 +293,12 @@ def build_features(
         raise ValueError(f"lead_days must be non-negative, got {lead_days}")
     if not lags_days:
         raise ValueError("lags_days must not be empty")
-    too_recent = sorted(k for k in lags_days if k < FIRST_COMPLETE_LAG_DAYS)
+    too_recent = sorted(k for k in lags_days if k < FIRST_KNOWN_LAG_DAYS)
     if too_recent:
         raise ValueError(
-            f"price lag(s) {too_recent} reach into a delivery day that has not "
-            f"finished when the gate closes; the shortest complete lag is "
-            f"{FIRST_COMPLETE_LAG_DAYS} days. See bess_arb.forecast.features."
+            f"price lag(s) {too_recent} reach into a delivery day whose prices "
+            f"are not published when the gate closes; the shortest known lag is "
+            f"{FIRST_KNOWN_LAG_DAYS} day. See bess_arb.forecast.features."
         )
 
     index = pd.DatetimeIndex(prices.index).as_unit("ns")
@@ -303,7 +318,7 @@ def build_features(
     column = np.asarray(pivot.columns.get_indexer(time_of_day), dtype=np.int64)
     grid = pivot.to_numpy()
 
-    day_end = _day_end_utc(days)
+    day_published = _day_published_utc(days)
     day_gate = _day_gate_utc(days)
     anchor = row - lead_days  # position of the decision day D
     gate = _utc(_stamp(day_gate, anchor))
@@ -321,30 +336,30 @@ def build_features(
     # keeps this right across DST: on the 23-hour day one key is simply
     # absent and arrives as NaN, which LightGBM handles natively, instead of
     # silently pairing 03:00 with the previous day's 02:00.
+    #
+    # A lag's publication instant is that of the delivery day it reads: the
+    # whole of D-k became public at once, the afternoon before D-k started.
     for k in lags:
         values[f"price_lag{k}d"] = _cell(grid, anchor - k, column)
-        stamps[f"price_lag{k}d"] = _utc(_stamp(day_end, anchor - k))
+        stamps[f"price_lag{k}d"] = _utc(_stamp(day_published, anchor - k))
 
+    # The aggregates over the lag window are knowable once their newest day
+    # is, which is what stamps them at the newest lag's publication.
     newest, span = lags[0], len(lags)
     by_time = pivot.shift(newest).rolling(span, min_periods=1).mean().to_numpy()
     values["price_hod_mean_recent"] = _cell(by_time, anchor, column)
-    stamps["price_hod_mean_recent"] = _utc(_stamp(day_end, anchor - newest))
+    stamps["price_hod_mean_recent"] = _utc(_stamp(day_published, anchor - newest))
 
     daily = pivot.mean(axis=1)
     values[f"price_day_mean_lag{newest}d"] = _row(daily.to_numpy(), anchor - newest)
-    stamps[f"price_day_mean_lag{newest}d"] = _utc(_stamp(day_end, anchor - newest))
+    stamps[f"price_day_mean_lag{newest}d"] = _utc(
+        _stamp(day_published, anchor - newest)
+    )
 
     values["price_day_mean_recent"] = _row(
         daily.shift(newest).rolling(span, min_periods=1).mean().to_numpy(), anchor
     )
-    stamps["price_day_mean_recent"] = _utc(_stamp(day_end, anchor - newest))
-
-    # The one feature that reads D-1: its periods up to noon, and no further.
-    # This is the freshest price information the gate permits, and its
-    # publication instant *is* the gate.
-    morning = pivot.loc[:, pivot.columns < GATE_CLOSE_LOCAL_HOUR * 100]
-    values["price_pregate_mean"] = _row(morning.mean(axis=1).to_numpy(), anchor - 1)
-    stamps["price_pregate_mean"] = _utc(_stamp(day_gate, anchor))
+    stamps["price_day_mean_recent"] = _utc(_stamp(day_published, anchor - newest))
 
     # --- published forecasts, day D only -----------------------------------
     if exog is not None and lead_days == 0:
@@ -362,7 +377,11 @@ def build_features(
         values=values,
         available_at=stamps,
         gate=pd.Series(gate, index=index, name="gate"),
-        settled_at=pd.Series(index + regime.step, index=index, name="settled_at"),
+        # A row's target is knowable when its delivery day's prices publish,
+        # not when its period is delivered — the same reading as the lags.
+        settled_at=pd.Series(
+            price_published_index(index), index=index, name="settled_at"
+        ),
         target=pd.Series(
             prices.to_numpy(dtype=np.float64), index=index, name="price_eur_mwh"
         ),
@@ -387,10 +406,10 @@ def _price_pivot(
     return pivot.reindex(span)
 
 
-def _day_end_utc(days: pd.Index) -> np.ndarray:
-    """The instant each delivery day finishes — when its prices are all known."""
+def _day_published_utc(days: pd.Index) -> np.ndarray:
+    """The instant each delivery day's prices were published, as a lookup array."""
     return np.array(
-        [day_bounds(d, d)[1].tz_convert(UTC).tz_localize(None) for d in days],
+        [price_published_utc(d).tz_localize(None) for d in days],
         dtype="datetime64[ns]",
     )
 

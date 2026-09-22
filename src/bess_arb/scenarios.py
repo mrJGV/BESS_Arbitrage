@@ -45,10 +45,12 @@ one is a decision that would otherwise need enforcing:
 Causality
 ---------
 
-The residual pool holds only decisions whose periods had all cleared before
-this decision's gate -- the same strict reading of invariant 1 that
-:class:`~bess_arb.policy.floor.FloorPolicy` applies to its climatology, and for
-the same reason. See :meth:`BeliefResiduals._eligible`.
+The residual pool holds only decisions whose windows had been *published* in
+full by this decision's gate -- the same publication-time reading of
+invariant 1 that :class:`~bess_arb.policy.floor.FloorPolicy` applies to its
+climatology, and for the same reason. A window over D and D+1 is known once
+D+1's prices publish, on the afternoon of D. See
+:meth:`BeliefResiduals._eligible`.
 
 Centring
 --------
@@ -72,7 +74,7 @@ import pandas as pd
 from numpy.typing import NDArray
 
 from bess_arb.model.spec import FloatArray
-from bess_arb.timeline import MARKET_TZ, gate_close_utc
+from bess_arb.timeline import MARKET_TZ, gate_close_utc, price_published_index
 
 __all__ = ["BeliefResiduals", "ScenarioConfig"]
 
@@ -117,6 +119,9 @@ class _Belief:
     stamps_ns: NDArray[np.int64]
     first_day_periods: int
     believed: FloatArray
+    published_ns: int
+    """When the last delivery day of the window was published — the instant
+    the whole window's realised prices became known."""
 
 
 class BeliefResiduals:
@@ -161,6 +166,7 @@ class BeliefResiduals:
             stamps_ns=np.asarray(window.as_unit("ns").asi8, dtype=np.int64),
             first_day_periods=int((local_dates == day).sum()),
             believed=np.asarray(believed, dtype=np.float64).copy(),
+            published_ns=int(price_published_index(window).as_unit("ns").asi8.max()),
         )
 
     # -- sampling ----------------------------------------------------------
@@ -215,13 +221,12 @@ class BeliefResiduals:
 
         Two independent conditions, both load-bearing.
 
-        **Causality.** Every period of ``past``'s window must have cleared
-        before this gate. Invariant 1 is read on publication time: a realised
-        price becomes knowable at ``t + dt``, and on a grid with spacing ``dt``
-        the condition ``t + dt <= gate`` is exactly ``t < gate``. Strictly
-        less, not ``<=``: noon is a period boundary on both grids, so
-        ``t == gate`` is a case that really occurs, and that period's price
-        publishes around 13:00 -- an hour after the decision. The same reading
+        **Causality.** Every period of ``past``'s window must have been
+        published by this gate. Invariant 1 is read on publication time: a
+        delivery day's prices become knowable when OMIE publishes them, about
+        13:00 on the day before delivery, so a window over D and D+1 is known
+        from the afternoon of D and is admissible for any decision whose gate
+        is noon on D+1 or later. The same reading
         :func:`bess_arb.policy.floor._mean_before` applies. Both sides are
         pinned to nanoseconds here: a Parquet round trip hands back
         microsecond indexes, and comparing those against ``Timestamp.value``
@@ -241,7 +246,7 @@ class BeliefResiduals:
             (pd.Index(window.tz_convert(MARKET_TZ).date) == day).sum()
         )
         return (
-            int(belief.stamps_ns.max()) < gate_ns
+            belief.published_ns <= gate_ns
             and len(belief.stamps_ns) == len(window)
             and belief.first_day_periods == target_first_day
         )

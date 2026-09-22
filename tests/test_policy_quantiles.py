@@ -18,7 +18,7 @@ import pytest
 from bess_arb.policy import QuantilePolicy
 from bess_arb.policy.floor import FloorPolicy
 from bess_arb.policy.oracle import OraclePolicy
-from bess_arb.timeline import Regime, to_market_time, utc_index
+from bess_arb.timeline import Regime, price_published_index, to_market_time, utc_index
 
 HOURLY = Regime("hourly", 1.0)
 TAUS = (0.1, 0.3, 0.5, 0.7, 0.9)
@@ -112,7 +112,7 @@ def test_the_threshold_does_not_vary_with_tau() -> None:
 def test_the_floor_quantiles_read_nothing_after_the_gate() -> None:
     """Invariant 1, applied to the quantile ladder as well as the mean.
 
-    Prices after the gate are replaced with an absurd value; the answer must
+    Prices published after the gate are replaced with an absurd value; the answer must
     not move. A quantile is more sensitive to this than a mean, since one
     extreme observation relocates the tail of a small sample.
     """
@@ -126,7 +126,9 @@ def test_the_floor_quantiles_read_nothing_after_the_gate() -> None:
         dt.datetime.combine(day - dt.timedelta(days=1), dt.time(12)),
         tz="Europe/Madrid",
     ).tz_convert("UTC")
-    poisoned.loc[poisoned.index >= gate] = 9999.0
+    poisoned.loc[
+        np.asarray(price_published_index(pd.DatetimeIndex(poisoned.index)) > gate)
+    ] = 9999.0
 
     assert _family(FloorPolicy(poisoned), day) == pytest.approx(honest)
 

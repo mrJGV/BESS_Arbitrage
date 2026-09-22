@@ -4,8 +4,8 @@ version = "0.1.0"
 description = "Day-ahead arbitrage demonstrator for a 10 MW / 20 MWh battery in the Spanish market (OMIE)"
 readme = "README.md"
 requires-python = ">=3.12"
-license = "GPL-3.0-or-later"
-license-files = ["LICENSE"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 dependencies = [
     "pyomo>=6.9",
     "highspy>=1.11",
@@ -117,6 +117,7 @@ source_modules = [
     "bess_arb.policy",
     "bess_arb.backtest",
     "bess_arb.forecast",
+    "bess_arb.figures",
 ]
 forbidden_modules = ["pyomo", "highspy", "pyoptinterface", "gurobipy"]
 
@@ -188,6 +189,7 @@ source_modules = [
     "bess_arb.model",
     "bess_arb.forecast.features",
     "bess_arb.policy",
+    "bess_arb.figures",
 ]
 forbidden_modules = ["lightgbm"]
 as_packages = false
