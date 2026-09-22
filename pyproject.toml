@@ -4,8 +4,8 @@ version = "0.1.0"
 description = "Day-ahead arbitrage demonstrator for a 10 MW / 20 MWh battery in the Spanish market (OMIE)"
 readme = "README.md"
 requires-python = ">=3.12"
-license = "GPL-3.0-or-later"
-license-files = ["LICENSE"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 dependencies = [
     "pyomo>=6.9",
     "highspy>=1.11",

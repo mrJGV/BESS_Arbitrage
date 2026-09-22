@@ -1,0 +1,7 @@
+BESS_Arbitrage - battery arbitrage demonstrator for the Spanish day-ahead market
+Copyright 2026 Jose GV
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+Price and forecast data in data/ are from ESIOS (Red Electrica de Espana) and OMIE
+and are redistributed under their own terms; see data/README.md.
