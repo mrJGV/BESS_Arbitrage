@@ -44,7 +44,7 @@ forecast series are still published hourly after the market moved to
 15-minute market time units. Forward-filling them onto the 96-period grid is
 a modelling decision that belongs to the forecaster, and freezing it here
 would make it unrevisable without re-pulling. So each file holds exactly one
-grid and the mismatch stays visible. `docs/DECISIONS.md` §5.4.
+grid and the mismatch stays visible. `docs/DECISIONS.md` §7.
 
 ## Series
 

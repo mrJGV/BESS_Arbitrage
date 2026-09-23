@@ -42,7 +42,7 @@ class BatteryMILP(Protocol):
     length — and builds the model once. :meth:`solve` changes only the price
     coefficients and the initial state, which is what makes a persistent
     re-solve possible. A backend that rebuilds inside :meth:`solve` satisfies
-    this Protocol and defeats its purpose; see ``docs/DECISIONS.md`` §6.3.
+    this Protocol and defeats its purpose; see ``docs/DECISIONS.md`` §8.
 
     ``relax_binaries`` is a diagnostic, not a policy option. It exists so
     ``tests/test_model_binaries.py`` can demonstrate that the LP relaxation
@@ -98,7 +98,7 @@ class BidCurveMILP(Protocol):
     exactly that sentence — a second formulation is permitted for the bidding
     question and for nothing else. A backend that used it to serve a policy
     would satisfy this Protocol and defeat its purpose, in the same way
-    ``docs/DECISIONS.md`` §6.3 describes for a backend that rebuilds inside
+    ``docs/DECISIONS.md`` §8 describes for a backend that rebuilds inside
     :meth:`solve`.
 
     The physical model is not duplicated by it: the balance, exclusivity,

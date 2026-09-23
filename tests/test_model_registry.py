@@ -19,7 +19,7 @@ def test_the_configured_backend_is_registered() -> None:
 
 
 def test_pyomo_is_the_v1_backend() -> None:
-    """Pyomo first, PyOptInterface second — docs/DECISIONS.md §6.1."""
+    """Pyomo first, PyOptInterface second — docs/DECISIONS.md §8."""
     assert "pyomo" in available_backends()
 
 

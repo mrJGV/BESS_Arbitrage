@@ -100,10 +100,12 @@ the new optimum, not a stale one.
 
 PyOptInterface (`model/poi.py`) is a **later** performance port, not the
 starting point. Do not begin it until the Pyomo backtest runs end to end
-and the golden test passes. When that time comes: **use
-`docs/poi_reference.py` as the authoritative API reference**, do not
-write PyOptInterface calls from memory, and if a needed pattern is not
-in the reference, say so and ask rather than guessing at a method name.
+and the golden test passes. The port was not started before the freeze,
+so `docs/poi_reference.py` is not in the tree. When that time comes:
+**assemble it first and use it as the authoritative API reference**, do
+not write PyOptInterface calls from memory, and if a needed pattern is
+not in the reference, say so and ask rather than guessing at a method
+name.
 
 Every backend builds the model once per regime and then, per window,
 updates only the objective price coefficients and the initial SoC bound

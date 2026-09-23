@@ -81,7 +81,7 @@ compared against it needs D+1 prices to exist.
 `--solver gurobi` is the whole difference. Same `config/params.yaml`, same
 `backend: pyomo`, same `src/bess_arb/model/pyomo.py` — the solver is named by
 string and resolved inside the modelling layer, which is what
-`docs/DECISIONS.md` §6.2 claims. The claim rests on the boundary being enforced
+`docs/DECISIONS.md` §8 claims. The claim rests on the boundary being enforced
 in code — the `import-linter` contract and `tests/test_import_boundary.py` — and
 not on this script, which has not been run.
 

@@ -30,7 +30,7 @@ uv sync --all-groups --locked
 # Everything that differs from the local run is on this command line: the
 # solver name, the thread count and the tolerances. No code path is
 # cluster-specific, and `model/pyomo.py` is byte-identical to the one HiGHS
-# runs through — that is docs/DECISIONS.md §6.2's claim, tested by using it.
+# runs through — that is docs/DECISIONS.md §8's claim, tested by using it.
 uv run bess-arb bound \
     --regime hourly \
     --solver gurobi \

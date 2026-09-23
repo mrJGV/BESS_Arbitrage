@@ -88,7 +88,7 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers"
 
 # --------------------------------------------------------------------------
-# Import boundary (docs/DECISIONS.md §6.2, CLAUDE.md invariant on the
+# Import boundary (docs/DECISIONS.md §8, CLAUDE.md invariant on the
 # modelling layer). Three contracts, because there are three distinct rules:
 # solvers stay inside model/, the spec and the Protocol are solver-free even
 # within model/, and the modelling layer does not reach up into the
