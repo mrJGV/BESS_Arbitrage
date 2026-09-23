@@ -213,7 +213,7 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     ``--solver`` and friends override the corresponding
     ``config/params.yaml`` keys and nothing else. Moving from HiGHS locally to
     Gurobi on a cluster is meant to be exactly this and no code change
-    (docs/DECISIONS.md §6.2); the day it needs more, the backend abstraction
+    (docs/DECISIONS.md §8); the day it needs more, the backend abstraction
     has leaked.
     """
     parser.add_argument(
@@ -484,7 +484,7 @@ def _print_forecast_error(
 ) -> dict[str, object]:
     """The secondary error table.
 
-    ``docs/DECISIONS.md`` §4.1: RMSE is reported and **is not the metric**. It
+    ``docs/DECISIONS.md`` §4: RMSE is reported and **is not the metric**. It
     goes below the economics, never above, because a forecast can be more
     accurate and worth less — what a battery needs is the day's *ordering*, so
     the rank correlation within each delivery day is printed beside it.

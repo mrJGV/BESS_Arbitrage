@@ -154,7 +154,7 @@ def load_exogenous(config: Config, regime_name: str) -> pd.DataFrame:
     hourly and stayed hourly when the market moved to 15-minute units, so
     resampling it would be inventing intra-hour detail that was never
     published; the feature builder reads the hour containing each period
-    instead. ``docs/DECISIONS.md`` §5.3 and §5.4 — one grid per file, and the
+    instead. ``docs/DECISIONS.md`` §7 — one grid per file, and the
     forward-fill left to this slice to decide deliberately.
     """
     frames = [_exogenous_for(config, window.name) for window in config.data.regimes]

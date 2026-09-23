@@ -440,7 +440,7 @@ def run_backtest(
                     curves,
                     # The expected profit over the scenario set, which is what
                     # this optimiser was shown. Settlement still recomputes
-                    # from the cleared dispatch — §4.1, and the distinction is
+                    # from the cleared dispatch — §4, and the distinction is
                     # sharper here than anywhere else in the project, because
                     # this objective is an expectation over beliefs and could
                     # not be a profit even in principle.

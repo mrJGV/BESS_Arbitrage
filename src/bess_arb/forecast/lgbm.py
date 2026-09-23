@@ -1,11 +1,11 @@
 """The point forecaster: LightGBM, deliberately boring.
 
-``docs/DECISIONS.md`` §6 lists the forecaster as "LightGBM, deliberately
-boring" — the contribution is the decision layer, not this. Nothing here is
-tuned, stacked or ensembled. What it does have to get right is **when** each
-number was knowable — that lives next door in
-:mod:`bess_arb.forecast.features` — and **which data a fit was allowed to
-see**, which lives here.
+``docs/DECISIONS.md`` §5 calls the forecaster deliberately plain and puts the
+value of the project in the optimiser — the contribution is the decision
+layer, not this. Nothing here is tuned, stacked or ensembled. What it does
+have to get right is **when** each number was knowable — that lives next
+door in :mod:`bess_arb.forecast.features` — and **which data a fit was
+allowed to see**, which lives here.
 
 A note on the measurements quoted below. They were taken before 18 September
 2026, when the information set was corrected in two respects: price lags now
@@ -40,7 +40,7 @@ neither of the two the question offered.
 **Pooling alone has a structural defect, not a small one.** Before 1 October
 2025 the published series is on a 15-minute grid whose four values inside
 each hour are *identical* — measured, maximum spread 0.0000 €/MWh
-(``docs/DECISIONS.md`` §5.4). So 88% of a pooled training set states, correctly, that
+(``docs/DECISIONS.md`` §7). So 88% of a pooled training set states, correctly, that
 intra-hour spread is zero, and the model learns to predict a quarter of the
 spread that now exists. It is not that the pooled model is 1 €/MWh worse; it
 is that it cannot represent the thing the quarter-hourly regime added.
@@ -493,7 +493,7 @@ class PriceForecaster:
         """Every forecast made at horizon ``lead_days``, for the error table.
 
         Lead 0 is the one that matters: it prices the day the backtest
-        actually implements. ``docs/DECISIONS.md`` §4.1 — RMSE is reported,
+        actually implements. ``docs/DECISIONS.md`` §4 — RMSE is reported,
         and it is not the metric.
         """
         made = self._predictions[lead_days]

@@ -3,16 +3,18 @@
 ``docs/DECISIONS.md`` §2.3 records the simplification this module removes. Up
 to v2 a policy committed a *quantity* — charge 10 MW at 03:00 — and paid
 whatever 03:00 cleared at, however far that was from the forecast. That is
-equivalent to bidding at the market's price limits, and §2.3's worked example
-shows what it costs: a forecast of €20 that clears at €300 buys the energy
-anyway. A real participant submits a price-quantity curve and simply drops out
-of the money.
+equivalent to bidding at the market's price limits, and the cost of that is
+one line: a forecast of €20 that clears at €300 buys the energy anyway. A real
+participant submits a price-quantity curve and simply drops out of the money.
 
-The curve is therefore a free option against forecast error, and §2.3 spends a
-page on why v1 and v2 throw it away deliberately: giving one policy limit
-prices while the others keep fixed schedules would introduce a second
-difference and make "% of bound" uninterpretable. v2.5 gives the option to
-**every** policy, which is what keeps the ratio readable.
+Whether that limit is worth anything is a measured question rather than a
+property of the construction: a limit derived from the same forecast whose
+error it would hedge is not free by assumption. §2.3 states the answer and
+§6 carries the evidence; this module builds the object they are about. What
+v1 and v2 could not do is give one policy limit prices while the others keep
+fixed schedules — that introduces a second difference and makes "% of bound"
+uninterpretable — so the curve goes to **every** policy, which is what keeps
+the ratio readable.
 
 Signed net position, not two curves
 -----------------------------------
@@ -36,12 +38,13 @@ those vectors instead of one.
 
 **What the tau-sweep is, and what it is not.** Every period sits at the same
 quantile level simultaneously, so the family is comonotone: it moves the price
-*level* much more than the day's *shape*. MD §5.1 already states that
-independent marginal quantiles cannot stand in for a joint trajectory — that is
-v3's subject. For curve construction the approximation is the usual one, but it
-has a visible failure mode: if the shape never changes, dispatch never changes,
-and every curve collapses to a single step. So :attr:`BidCurves.step_counts` is
-reported with the result rather than assumed away.
+*level* much more than the day's *shape*. ``docs/DECISIONS.md`` §6 makes the
+same point from the other side: the forecast object a battery needs is a joint
+trajectory over the window, not a set of marginal quantiles. For curve
+construction the approximation is the usual one, but it has a visible failure
+mode: if the shape never changes, dispatch never changes, and every curve
+collapses to a single step. So :attr:`BidCurves.step_counts` is reported with
+the result rather than assumed away.
 """
 
 from __future__ import annotations

@@ -37,10 +37,10 @@ then, which is every day through D-1. It is also the reading
 :mod:`bess_arb.scenarios` to its residual pool, so every policy reads the same
 history.
 
-**What is assumed, and where it would break.** ``docs/DECISIONS.md`` §5.3
+**What is assumed, and where it would break.** ``docs/DECISIONS.md`` §7
 records the D+1 family as fixed at vintage D-1 and never rewritten — it is the
 only family that survives the gate at all, and the rolling one was rejected on
-measured evidence. What §5.3 does not fix is the *hour* on D-1, and the frozen
+measured evidence. What §7 does not fix is the *hour* on D-1, and the frozen
 snapshot cannot supply it: it stores valid times and has no publication column.
 So the noon deadline is one input this module takes on trust. It is
 therefore written down as a constant, :data:`EXOGENOUS_PUBLISHED_AT_GATE`,
@@ -127,7 +127,7 @@ cannot be earned.
 EXOGENOUS_PUBLISHED_AT_GATE = True
 """Whether the D+1 forecast bundle for day D is on the wire by ``gate(D)``.
 
-``docs/DECISIONS.md`` §5.3 fixes the vintage at D-1; what the snapshot cannot
+``docs/DECISIONS.md`` §7 fixes the vintage at D-1; what the snapshot cannot
 confirm is the hour within that day, since it stores valid times only. See the
 module docstring. Setting this ``False`` makes the whole exogenous block
 inadmissible rather than silently shifting it, which is the failure mode worth

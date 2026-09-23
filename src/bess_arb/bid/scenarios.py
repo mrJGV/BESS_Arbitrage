@@ -39,10 +39,11 @@ __all__ = ["QUANTILE_LEVELS", "ScenarioSolves", "solve_curves", "solve_scenarios
 QUANTILE_LEVELS: tuple[float, ...] = (0.1, 0.3, 0.5, 0.7, 0.9)
 """Equally spaced, the median included, the tails excluded — deliberately.
 
-MD §7's "deliberately boring" applies here too: five levels, symmetric around
-the median, no defended constant beyond that. The median matters because most
-realised prices land near the centre of the distribution, where the curve
-needs its resolution; the tails are cut at 0.1/0.9 rather than carried further
+``docs/DECISIONS.md`` §5 keeps the forecaster deliberately plain, and the
+same restraint applies here: five levels, symmetric around the median, no
+defended constant beyond that. The median matters because most realised
+prices land near the centre of the distribution, where the curve needs its
+resolution; the tails are cut at 0.1/0.9 rather than carried further
 out because the outer steps are clamps (any realised price beyond the last
 step just takes that step's quantity, see
 :meth:`bess_arb.bid.curve.BidCurves.clear`), so a more extreme quantile only

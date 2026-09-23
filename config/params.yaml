@@ -1,5 +1,5 @@
 # Values and their justification: docs/DECISIONS.md §3 (asset, degradation,
-# tariffs) and §6 (stack). Sections for the horizon protocol, the data
+# tariffs) and §8 (stack). Sections for the horizon protocol, the data
 # snapshot and the forecaster arrive with the slices that read them
 
 # --- Asset -----------------------------------------------------------------
@@ -109,7 +109,7 @@ bound:
     time_limit_s: 3600.0
 
 # --- Point forecaster ------------------------------------------------------
-# LightGBM, deliberately boring: DECISIONS.md §7 puts the contribution in the
+# LightGBM, deliberately boring: DECISIONS.md §5 puts the contribution in the
 # decision layer, not here. Two stages — an hourly *level* model over the
 # whole history, and an intra-hour *deviation* model over the period where
 # that quantity is not identically zero. The second is built only when the

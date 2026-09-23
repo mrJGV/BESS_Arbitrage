@@ -21,7 +21,7 @@ Why this cannot be relaxed
 Hourly, this is 8,760 periods: ~35,040 variables of which 8,760 are binary
 (~140,160 and 35,040 quarter-hourly). That is far past a window solve, and
 the obvious escape — drop the integrality and solve an LP — is forbidden
-(CLAUDE.md invariant 5, §7). With negative prices the relaxation charges and
+(CLAUDE.md invariant 5, §9). With negative prices the relaxation charges and
 discharges at once and *scores higher than the true optimum*, so relaxing
 would inflate the denominator of every ratio in the repository. A bound may
 be loose; it may not be wrong in the direction that flatters the result.

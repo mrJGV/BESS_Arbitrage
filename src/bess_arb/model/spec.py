@@ -4,7 +4,7 @@ This module imports nothing solver-related, and neither does
 :mod:`bess_arb.model.base`. Together they are the whole of the modelling
 layer that the rest of the package — and every backend — is allowed to see.
 A raw solver status or a Pyomo/PyOptInterface object must never appear here.
-See ``docs/DECISIONS.md`` §6.2.
+See ``docs/DECISIONS.md`` §8.
 """
 
 from __future__ import annotations
